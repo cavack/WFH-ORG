@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+coverage/
+.venv/
+
+# Node / Next.js
+node_modules/
+.next/
+
+# OS / editor
+.DS_Store
+*.swp
+
+# Local environment and runtime data
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3

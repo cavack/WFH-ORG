@@ -1,1 +1,0 @@
-Temporary bootstrap marker; remove after the first source-manifest commit lands on the migration branch.
