@@ -130,5 +130,52 @@ class MigrationManifestVerifierTests(unittest.TestCase):
         self.assertIn("source_blob_sha", result.stderr)
 
 
+    def test_strict_mode_requires_destination_and_verification_for_imported_file(self) -> None:
+        entry = manifest_entry(
+            disposition="KEEP",
+            destination_path=None,
+            rationale="accepted source file",
+            verification=[],
+        )
+        result = self.run_verifier(manifest_with(entry))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("destination_path", result.stderr)
+        self.assertIn("verification", result.stderr)
+
+    def test_target_root_rejects_unmanifested_tracked_file(self) -> None:
+        entry = manifest_entry(
+            disposition="KEEP",
+            destination_path="README.md",
+            rationale="canonical readme",
+            verification=["verified"],
+        )
+        manifest = manifest_with(entry)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            target = root / "target"
+            target.mkdir()
+            subprocess.run(["git", "init", "-q", str(target)], check=True)
+            (target / "README.md").write_text("ok\n", encoding="utf-8")
+            (target / "extra.txt").write_text("unmanifested\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(target), "add", "README.md", "extra.txt"], check=True)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(VERIFIER),
+                    str(manifest_path),
+                    "--target-root",
+                    str(target),
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("unmanifested target path: extra.txt", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
