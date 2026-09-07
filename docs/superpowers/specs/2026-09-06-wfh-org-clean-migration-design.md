@@ -47,6 +47,8 @@ Provenance is preserved through a machine-readable migration manifest containing
 
 No file may enter the canonical source tree without a disposition record.
 
+Manifest schema v2 also records the final canonical target tree independently from the frozen source inventory. Every final tracked file records its Git path, mode, final blob SHA (except the manifest's unavoidable self-reference), accepted disposition, origin class, rationale, and verification evidence. Strict verification compares that target manifest against `git ls-files -s`, so an unreviewed added file, missing file, mode change, or post-review content change fails closed.
+
 ## Repository target structure
 
 The target keeps the current proven high-level product boundaries unless a verified defect requires a narrower change:
