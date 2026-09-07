@@ -26,7 +26,10 @@ REQUIRED_FILE_FIELDS = {
 
 
 def verify(
-    data: dict, *, allow_unreviewed: bool, target_paths: set[str] | None = None
+    data: dict,
+    *,
+    allow_unreviewed: bool,
+    target_index: dict[str, tuple[str, str]] | None = None,
 ) -> list[str]:
     errors: list[str] = []
     files = data.get("files", [])
@@ -95,34 +98,90 @@ def verify(
             errors.append(f"duplicate destination: {destination}")
         destinations.add(destination)
 
-    if target_paths is not None:
-        expected_paths = {
-            str(item["destination_path"])
+    schema_version = int(data.get("schema_version", 1))
+    target_files = data.get("target_files", []) if schema_version >= 2 else []
+    if schema_version >= 2:
+        source_refs = {
+            f"{item.get('source_repo')}@{item.get('source_sha')}:{item.get('source_path')}"
             for item in files
-            if item.get("disposition") in {"KEEP", "FIX_FIRST"}
-            and item.get("destination_path")
         }
+        seen_target_paths: set[str] = set()
+        for item in target_files:
+            path = str(item.get("path", ""))
+            if not path:
+                errors.append("target file path required")
+                continue
+            if path in seen_target_paths:
+                errors.append(f"duplicate target file: {path}")
+            seen_target_paths.add(path)
+            origin = item.get("origin")
+            refs = item.get("source_refs") or []
+            if path != "migration/source-manifest.json" and not item.get("blob_sha"):
+                errors.append(f"blob_sha required for target file: {path}")
+            if origin in {"legacy_unchanged", "legacy_fixed"} and not refs:
+                errors.append(f"source_refs required for legacy target: {path}")
+            for ref in refs:
+                if ref not in source_refs:
+                    errors.append(f"unknown target source_ref for {path}: {ref}")
+            if not allow_unreviewed and not item.get("verification"):
+                errors.append(f"verification required for target file: {path}")
+
+    if target_index is not None:
+        if schema_version >= 2:
+            expected_paths = {str(item.get("path")) for item in target_files if item.get("path")}
+        else:
+            expected_paths = {
+                str(item["destination_path"])
+                for item in files
+                if item.get("disposition") in {"KEEP", "FIX_FIRST"}
+                and item.get("destination_path")
+            }
+        target_paths = set(target_index)
         for path in sorted(target_paths - expected_paths):
             errors.append(f"unmanifested target path: {path}")
         for path in sorted(expected_paths - target_paths):
             errors.append(f"manifest destination missing from target: {path}")
+        if schema_version >= 2:
+            for item in target_files:
+                path = item.get("path")
+                if not path or path not in target_index:
+                    continue
+                actual_mode, actual_blob = target_index[path]
+                expected_mode = str(item.get("mode", ""))
+                expected_blob = str(item.get("blob_sha", ""))
+                if expected_mode and actual_mode != expected_mode:
+                    errors.append(
+                        f"target mode mismatch: {path}: expected {expected_mode}, observed {actual_mode}"
+                    )
+                if expected_blob and actual_blob != expected_blob:
+                    errors.append(
+                        f"target blob mismatch: {path}: expected {expected_blob}, observed {actual_blob}"
+                    )
     return errors
 
 
-def _tracked_paths(target_root: Path) -> set[str]:
+def _tracked_index(target_root: Path) -> dict[str, tuple[str, str]]:
     result = subprocess.run(
-        ["git", "-C", str(target_root), "ls-files", "-z"],
+        ["git", "-C", str(target_root), "ls-files", "-s", "-z"],
         capture_output=True,
         check=False,
     )
     if result.returncode != 0:
         message = result.stderr.decode("utf-8", errors="replace").strip()
         raise RuntimeError(message or "git ls-files failed")
-    return {
-        item.decode("utf-8", errors="strict")
-        for item in result.stdout.split(b"\0")
-        if item
-    }
+    tracked: dict[str, tuple[str, str]] = {}
+    for raw in result.stdout.split(b"\0"):
+        if not raw:
+            continue
+        meta, path_raw = raw.split(b"\t", 1)
+        mode_raw, blob_raw, stage_raw = meta.split(b" ", 2)
+        if stage_raw != b"0":
+            raise RuntimeError("unmerged target path: " + path_raw.decode("utf-8", errors="replace"))
+        tracked[path_raw.decode("utf-8", errors="strict")] = (
+            mode_raw.decode("ascii"),
+            blob_raw.decode("ascii"),
+        )
+    return tracked
 
 
 def main() -> int:
@@ -134,14 +193,14 @@ def main() -> int:
 
     data = json.loads(args.manifest.read_text(encoding="utf-8"))
     try:
-        target_paths = _tracked_paths(args.target_root) if args.target_root else None
+        target_index = _tracked_index(args.target_root) if args.target_root else None
     except RuntimeError as exc:
         print(f"target tree inspection failed: {exc}", file=sys.stderr)
         return 1
     errors = verify(
         data,
         allow_unreviewed=args.allow_unreviewed,
-        target_paths=target_paths,
+        target_index=target_index,
     )
     if errors:
         for error in errors:
