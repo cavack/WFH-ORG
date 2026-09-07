@@ -148,7 +148,8 @@ def verify(
                     continue
                 actual_mode, actual_blob = target_index[path]
                 expected_mode = str(item.get("mode", ""))
-                expected_blob = str(item.get("blob_sha", ""))
+                raw_expected_blob = item.get("blob_sha")
+                expected_blob = str(raw_expected_blob) if raw_expected_blob is not None else None
                 if expected_mode and actual_mode != expected_mode:
                     errors.append(
                         f"target mode mismatch: {path}: expected {expected_mode}, observed {actual_mode}"

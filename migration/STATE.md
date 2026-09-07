@@ -1,6 +1,6 @@
 # Migration State
 
-Status: `TASK1_SOURCE_INVENTORY_COMPLETE`
+Status: `CLEAN_IMPORT_PREPARED_RUNTIME_CERTIFIED`
 
 Frozen inputs:
 
@@ -9,6 +9,14 @@ Frozen inputs:
 - PR #127 head `9b97820b43503cd0ef1d07950cbbad2ea7a79b43`.
 - PR #128 head `6db3472980c9d16fe090317324b94f743edaa955`.
 
-`migration/source-manifest.json` accounts for all 522 frozen tracked files by path, blob SHA, and Git mode. Inventory-mode verification is GREEN. Strict verification intentionally remains RED until all 522 entries receive final file-by-file dispositions.
+Certified reconciliation candidate:
 
-No WaterfallHunter runtime source has been imported yet. Production has not been modified by the WFH-ORG migration.
+- Runtime candidate content source: local reconciliation commit `1fbd87f220ae5e5e9547493ae0fe929ecaf55760` — 530 tracked files.
+- Backend source suite: `1590 passed / 6 skipped / 0 failed`.
+- Exact-image backend suite: `1590 passed / 6 skipped / 0 failed`.
+- Production-shaped SQLite v9→v10 rehearsal: `MIGRATED_COMPATIBLE`; `quick_check=ok`; `integrity_check=ok`.
+- Representative staging soak: due backlog reached and remained `0`; API remained responsive; memory stayed within a bounded high-water envelope with periodic `malloc_trim` recovery; no unclosed session, coroutine warning, orderbook KeyError, traceback, OOM kill, or retirement failure remained.
+
+`migration/source-manifest.json` is being promoted to schema v2. It retains disposition for all 522 frozen source files and separately records every final target path, Git mode, final blob SHA, origin class, rationale, and verification evidence. The manifest file itself is the sole self-hash exception; its containing Git commit provides immutable identity.
+
+Production remains on the legacy release until WFH-ORG clean-tree CI, DR/rollback certification, and explicit cutover gates pass. `LIVE_TRADING_ENABLED=false` remains mandatory.

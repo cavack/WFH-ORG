@@ -267,5 +267,29 @@ class MigrationManifestVerifierTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+    def test_v2_manifest_self_hash_exception_works_with_target_root(self) -> None:
+        target_entry = v2_target_file(
+            path="migration/source-manifest.json",
+            blob_sha=None,
+            origin="migration_control",
+            source_refs=[],
+        )
+        manifest = manifest_v2(target_files=[target_entry])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            target = root / "target"
+            (target / "migration").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(target)], check=True)
+            (target / "migration/source-manifest.json").write_text("self\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(target), "add", "migration/source-manifest.json"], check=True)
+            result = subprocess.run(
+                [sys.executable, str(VERIFIER), str(manifest_path), "--target-root", str(target)],
+                cwd=ROOT, text=True, capture_output=True, check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
