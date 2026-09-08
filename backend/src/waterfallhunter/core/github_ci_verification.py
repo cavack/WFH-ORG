@@ -257,6 +257,10 @@ def resolve_github_ci_verification(
         or run.get("head_sha") != expected_revision
         or run.get("path") != ".github/workflows/ci.yml"
         or run.get("event") not in {"pull_request", "push", "workflow_dispatch"}
+        or (
+            run.get("event") == "workflow_dispatch"
+            and run.get("head_branch") != "main"
+        )
         or run.get("status") != "completed"
         or run.get("conclusion") != "success"
         or not isinstance(run.get("run_attempt"), int)
