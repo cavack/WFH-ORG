@@ -67,11 +67,11 @@ def test_release_create_timeout_cleans_only_the_owned_draft(
 
     def fake_gh(*arguments: str, timeout: int = 120) -> str:
         calls.append(tuple(arguments))
-        if arguments[:2] == ("api", "repos/cavack/wfh-dr/git/matching-refs/tags/wfh-dr-timeout-test"):
+        if arguments[:2] == ("api", "repos/cavack/WFH-ORG-dr/git/matching-refs/tags/wfh-dr-timeout-test"):
             return "[]"
         if arguments[:2] == ("release", "create"):
             raise cli.RemoteBackupCLIError("SIMULATED_CREATE_TIMEOUT")
-        if arguments[:2] == ("api", "repos/cavack/wfh-dr/releases/tags/wfh-dr-timeout-test"):
+        if arguments[:2] == ("api", "repos/cavack/WFH-ORG-dr/releases/tags/wfh-dr-timeout-test"):
             return json.dumps({
                 "id": 123,
                 "tag_name": "wfh-dr-timeout-test",
@@ -83,7 +83,7 @@ def test_release_create_timeout_cleans_only_the_owned_draft(
     monkeypatch.setattr(cli, "_gh", fake_gh)
     with pytest.raises(cli.RemoteBackupCLIError, match="SIMULATED_CREATE_TIMEOUT"):
         cli._publish_release_assets(
-            repository="cavack/wfh-dr",
+            repository="cavack/WFH-ORG-dr",
             tag_name="wfh-dr-timeout-test",
             upload_paths=[Path("/tmp/part.enc")],
             ownership_marker=marker,
@@ -97,7 +97,7 @@ def test_release_create_timeout_cleans_only_the_owned_draft(
             "--hostname",
             "github.com",
         )
-        and call[-1] == "repos/cavack/wfh-dr/releases/123"
+        and call[-1] == "repos/cavack/WFH-ORG-dr/releases/123"
         for call in calls
     )
 
@@ -112,12 +112,12 @@ def test_owned_draft_lookup_falls_back_when_tag_endpoint_hides_draft(
         calls.append(tuple(arguments))
         if arguments[:2] == (
             "api",
-            "repos/cavack/wfh-dr/releases/tags/hidden-draft",
+            "repos/cavack/WFH-ORG-dr/releases/tags/hidden-draft",
         ):
             raise cli.RemoteBackupCLIError("REMOTE_BACKUP_GITHUB_COMMAND_FAILED:404")
         if arguments[:2] == (
             "api",
-            "repos/cavack/wfh-dr/releases?per_page=100&page=1",
+            "repos/cavack/WFH-ORG-dr/releases?per_page=100&page=1",
         ):
             return json.dumps([
                 {
@@ -132,7 +132,7 @@ def test_owned_draft_lookup_falls_back_when_tag_endpoint_hides_draft(
     monkeypatch.setattr(cli, "_gh", fake_gh)
 
     assert cli._owned_draft_release_id(
-        repository="cavack/wfh-dr",
+        repository="cavack/WFH-ORG-dr",
         tag_name="hidden-draft",
         ownership_marker=marker,
     ) == 123
@@ -149,12 +149,12 @@ def test_owned_draft_lookup_retries_until_new_draft_is_visible(
         nonlocal collection_reads
         if arguments[:2] == (
             "api",
-            "repos/cavack/wfh-dr/releases/tags/eventual-draft",
+            "repos/cavack/WFH-ORG-dr/releases/tags/eventual-draft",
         ):
             raise cli.RemoteBackupCLIError("REMOTE_BACKUP_GITHUB_COMMAND_FAILED:404")
         if arguments[:2] == (
             "api",
-            "repos/cavack/wfh-dr/releases?per_page=100&page=1",
+            "repos/cavack/WFH-ORG-dr/releases?per_page=100&page=1",
         ):
             collection_reads += 1
             if collection_reads == 1:
@@ -173,7 +173,7 @@ def test_owned_draft_lookup_retries_until_new_draft_is_visible(
     monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
 
     assert cli._owned_draft_release_id(
-        repository="cavack/wfh-dr",
+        repository="cavack/WFH-ORG-dr",
         tag_name="eventual-draft",
         ownership_marker=marker,
     ) == 777
@@ -187,11 +187,11 @@ def test_release_create_failure_never_deletes_a_preexisting_release(
 
     def fake_gh(*arguments: str, timeout: int = 120) -> str:
         calls.append(tuple(arguments))
-        if arguments[:2] == ("api", "repos/cavack/wfh-dr/git/matching-refs/tags/existing-dr"):
+        if arguments[:2] == ("api", "repos/cavack/WFH-ORG-dr/git/matching-refs/tags/existing-dr"):
             return json.dumps([{"ref": "refs/tags/existing-dr"}])
         if arguments[:2] == ("release", "create"):
             raise cli.RemoteBackupCLIError("REMOTE_BACKUP_GITHUB_COMMAND_FAILED:already_exists")
-        if arguments[:2] == ("api", "repos/cavack/wfh-dr/releases/tags/existing-dr"):
+        if arguments[:2] == ("api", "repos/cavack/WFH-ORG-dr/releases/tags/existing-dr"):
             return json.dumps({
                 "id": 77,
                 "tag_name": "existing-dr",
@@ -203,7 +203,7 @@ def test_release_create_failure_never_deletes_a_preexisting_release(
     monkeypatch.setattr(cli, "_gh", fake_gh)
     with pytest.raises(cli.RemoteBackupCLIError, match="already_exists"):
         cli._publish_release_assets(
-            repository="cavack/wfh-dr",
+            repository="cavack/WFH-ORG-dr",
             tag_name="existing-dr",
             upload_paths=[Path("/tmp/part.enc")],
             ownership_marker="wfh-backup-run:this-invocation",
@@ -218,9 +218,9 @@ def test_upload_failure_cleans_the_owned_draft(monkeypatch: pytest.MonkeyPatch) 
 
     def fake_gh(*arguments: str, timeout: int = 120) -> str:
         calls.append(tuple(arguments))
-        if arguments[:2] == ("api", "repos/cavack/wfh-dr/git/matching-refs/tags/publish-failure"):
+        if arguments[:2] == ("api", "repos/cavack/WFH-ORG-dr/git/matching-refs/tags/publish-failure"):
             return "[]"
-        if arguments[:2] == ("api", "repos/cavack/wfh-dr/releases/tags/publish-failure"):
+        if arguments[:2] == ("api", "repos/cavack/WFH-ORG-dr/releases/tags/publish-failure"):
             return json.dumps({
                 "id": 456,
                 "tag_name": "publish-failure",
@@ -234,14 +234,14 @@ def test_upload_failure_cleans_the_owned_draft(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(cli, "_gh", fake_gh)
     with pytest.raises(cli.RemoteBackupCLIError, match="SIMULATED_UPLOAD_FAILURE"):
         cli._publish_release_assets(
-            repository="cavack/wfh-dr",
+            repository="cavack/WFH-ORG-dr",
             tag_name="publish-failure",
             upload_paths=[Path("/tmp/part.enc")],
             ownership_marker=marker,
         )
 
     assert any(
-        call[-1] == "repos/cavack/wfh-dr/releases/456" and "DELETE" in call
+        call[-1] == "repos/cavack/WFH-ORG-dr/releases/456" and "DELETE" in call
         for call in calls
     )
 
@@ -266,11 +266,12 @@ def test_main_reports_published_release_when_remote_verification_fails(
         "--restore-target", str(restore),
         "--report", str(report),
         "--key-file", str(key),
-        "--remote-repository", "cavack/wfh-dr",
+        "--remote-repository", "cavack/WFH-ORG-dr",
         "--release-tag", "published-before-verification",
         "--source-failure-domain", "production-vda1",
-        "--destination-failure-domain", "github.com:cavack/wfh-dr",
+        "--destination-failure-domain", "github.com:cavack/WFH-ORG-dr",
     ])
+    monkeypatch.setattr(cli, "_assert_canonical_application_origin", lambda: None)
     monkeypatch.setattr(cli, "_validated_layout", lambda *_args: (
         staging / "remote-staging-backup.db",
         staging / "bundle",
@@ -336,9 +337,9 @@ def test_publish_failure_preserves_preexisting_tag(
 
     def fake_gh(*arguments: str, timeout: int = 120) -> str:
         calls.append(tuple(arguments))
-        if arguments[:2] == ("api", "repos/cavack/wfh-dr/git/matching-refs/tags/preexisting-tag"):
+        if arguments[:2] == ("api", "repos/cavack/WFH-ORG-dr/git/matching-refs/tags/preexisting-tag"):
             return json.dumps([{"ref": "refs/tags/preexisting-tag"}])
-        if arguments[:2] == ("api", "repos/cavack/wfh-dr/releases/tags/preexisting-tag"):
+        if arguments[:2] == ("api", "repos/cavack/WFH-ORG-dr/releases/tags/preexisting-tag"):
             return json.dumps({
                 "id": 999,
                 "tag_name": "preexisting-tag",
@@ -352,14 +353,14 @@ def test_publish_failure_preserves_preexisting_tag(
     monkeypatch.setattr(cli, "_gh", fake_gh)
     with pytest.raises(cli.RemoteBackupCLIError, match="SIMULATED_UPLOAD_FAILURE"):
         cli._publish_release_assets(
-            repository="cavack/wfh-dr",
+            repository="cavack/WFH-ORG-dr",
             tag_name="preexisting-tag",
             upload_paths=[Path("/tmp/part.enc")],
             ownership_marker=marker,
         )
 
-    assert any(call[-1] == "repos/cavack/wfh-dr/releases/999" for call in calls if "DELETE" in call)
-    assert not any(call[-1] == "repos/cavack/wfh-dr/git/refs/tags/preexisting-tag" for call in calls if "DELETE" in call)
+    assert any(call[-1] == "repos/cavack/WFH-ORG-dr/releases/999" for call in calls if "DELETE" in call)
+    assert not any(call[-1] == "repos/cavack/WFH-ORG-dr/git/refs/tags/preexisting-tag" for call in calls if "DELETE" in call)
 
 
 def test_lost_publish_response_is_reported_as_preserved_remote_state(
@@ -382,11 +383,12 @@ def test_lost_publish_response_is_reported_as_preserved_remote_state(
         "--restore-target", str(restore),
         "--report", str(report),
         "--key-file", str(key),
-        "--remote-repository", "cavack/wfh-dr",
+        "--remote-repository", "cavack/WFH-ORG-dr",
         "--release-tag", "publish-state-unknown",
         "--source-failure-domain", "production-vda1",
-        "--destination-failure-domain", "github.com:cavack/wfh-dr",
+        "--destination-failure-domain", "github.com:cavack/WFH-ORG-dr",
     ])
+    monkeypatch.setattr(cli, "_assert_canonical_application_origin", lambda: None)
     monkeypatch.setattr(cli, "_validated_layout", lambda *_args: (
         staging / "remote-staging-backup.db",
         staging / "bundle",
@@ -421,9 +423,9 @@ def test_publish_edit_lost_response_becomes_uncertain_state(
 
     def fake_gh(*arguments: str, timeout: int = 120) -> str:
         nonlocal release_reads
-        if arguments[:2] == ("api", "repos/cavack/wfh-dr/git/matching-refs/tags/lost-publish"):
+        if arguments[:2] == ("api", "repos/cavack/WFH-ORG-dr/git/matching-refs/tags/lost-publish"):
             return "[]"
-        if arguments[:2] == ("api", "repos/cavack/wfh-dr/releases/tags/lost-publish"):
+        if arguments[:2] == ("api", "repos/cavack/WFH-ORG-dr/releases/tags/lost-publish"):
             release_reads += 1
             return json.dumps({
                 "id": 321,
@@ -441,8 +443,35 @@ def test_publish_edit_lost_response_becomes_uncertain_state(
         match="REMOTE_BACKUP_PUBLICATION_STATE_UNCERTAIN",
     ):
         cli._publish_release_assets(
-            repository="cavack/wfh-dr",
+            repository="cavack/WFH-ORG-dr",
             tag_name="lost-publish",
             upload_paths=[Path("/tmp/part.enc")],
             ownership_marker=marker,
         )
+
+
+@pytest.mark.parametrize("origin", [
+    "https://github.com/cavack/wfh.git",
+    "https://github.com/cavack/sd.git",
+    "https://github.com/cavack/WFH-ORG-dr.git",
+])
+def test_backup_publisher_rejects_wrong_application_origin(monkeypatch, origin):
+    monkeypatch.setattr(cli.subprocess, "check_output", lambda *_a, **_k: origin)
+    with pytest.raises(cli.RemoteBackupCLIError, match="EXPECTED_REPOSITORY"):
+        cli._assert_canonical_application_origin()
+
+
+@pytest.mark.parametrize("repository", ["cavack/wfh-dr", "cavack/sd"])
+def test_backup_publisher_rejects_wrong_dr_before_staging(monkeypatch, repository):
+    from types import SimpleNamespace
+
+    class Parser:
+        def parse_args(self):
+            return SimpleNamespace(remote_repository=repository)
+
+        def error(self, message):
+            raise ValueError(message)
+
+    monkeypatch.setattr(cli, "_build_parser", Parser)
+    with pytest.raises(ValueError, match="EXPECTED_DR_REPOSITORY"):
+        cli.main()

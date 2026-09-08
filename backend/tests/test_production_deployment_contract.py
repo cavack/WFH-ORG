@@ -5,17 +5,26 @@ import re
 import shlex
 import shutil
 import subprocess
+import json
+import sys
+import time
 from pathlib import Path
 
 import yaml
 
 from waterfallhunter.core.contracts import ExecutionMode, SignalDecisionPacket
+from waterfallhunter.core.signal_metadata import canonical_sha256
 
 
 ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 DEPLOY_WORKFLOW = ROOT / ".github" / "workflows" / "deploy-production.yml"
+ACTIONLINT_CONFIG = ROOT / ".github" / "actionlint.yaml"
 DEPLOY_SCRIPT = ROOT / "scripts" / "deploy_production.sh"
+SELF_HOSTED_DIR = ROOT / "deploy" / "self-hosted"
+PRIVILEGED_WRAPPER = SELF_HOSTED_DIR / "wfh-production-deploy"
+HOST_INSTALLER = SELF_HOSTED_DIR / "install-production-runner-host.sh"
+RUNNER_PROVISIONER = SELF_HOSTED_DIR / "provision-ephemeral-runner.sh"
 SCAN_EXCLUDED_PARTS = {
     ".git",
     ".next",
@@ -130,6 +139,357 @@ def test_production_deploy_requires_explicit_main_dispatch_after_ci() -> None:
     assert callers == ["ci.yml"]
 
 
+
+def test_production_deploy_uses_ephemeral_self_hosted_runner_without_ssh() -> None:
+    workflow = yaml.load(DEPLOY_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    deploy = workflow["jobs"]["deploy"]
+    assert deploy["runs-on"] == ["self-hosted", "linux", "x64", "wfh-production-${{ github.run_id }}-${{ github.run_attempt }}"]
+    text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    for forbidden in (
+        "WFH_PROD_SSH_KEY",
+        "WFH_DEPLOY_SSH_KEY",
+        "WFH_PROD_KNOWN_HOSTS",
+        "WFH_DEPLOY_KNOWN_HOSTS",
+        "ssh \\",
+        "scp \\",
+        "StrictHostKeyChecking",
+    ):
+        assert forbidden not in text
+    assert "sudo /usr/local/sbin/wfh-production-deploy" in text
+    assert "${{ runner.temp }}" in text
+
+
+def test_actionlint_knows_the_custom_production_runner_label() -> None:
+    """Keep workflow lint aware of the narrow self-hosted runner label."""
+    config = yaml.safe_load(ACTIONLINT_CONFIG.read_text(encoding="utf-8"))
+    assert config["self-hosted-runner"]["labels"] == ["wfh-production-*"]
+
+
+def test_self_hosted_runner_host_contract_is_ephemeral_and_narrowly_privileged() -> None:
+    assert PRIVILEGED_WRAPPER.is_file()
+    assert HOST_INSTALLER.is_file()
+    assert RUNNER_PROVISIONER.is_file()
+    wrapper = PRIVILEGED_WRAPPER.read_text(encoding="utf-8")
+    installer = HOST_INSTALLER.read_text(encoding="utf-8")
+    provisioner = RUNNER_PROVISIONER.read_text(encoding="utf-8")
+    assert "release-recovery-gate.json" in wrapper
+    assert "RUNTIME_ROOT=\"/srv/waterfallhunter/runtime\"" in wrapper
+    assert "READY_FOR_EXPLICIT_DISPATCH" in wrapper
+    assert "EXPLICIT_WORKFLOW_DISPATCH" in wrapper
+    assert "wfh-deploy" in wrapper
+    assert "valid_until" in wrapper
+    assert "300" in wrapper
+    assert "/usr/local/sbin/wfh-production-deploy" in installer
+    assert "/usr/local/sbin/wfh-provision-production-runner" in installer
+    assert "/etc/waterfallhunter/runner-boundary-revision" in installer
+    assert "/etc/sudoers.d/wfh-production-deploy" in installer
+    assert "visudo -cf" in installer
+    assert "NOPASSWD" in installer
+    assert "--ephemeral" in provisioner
+    assert "--unattended" in provisioner
+    assert "wfh-production" in provisioner
+    assert "registration-token" in provisioner
+    assert "sha256" in provisioner.lower()
+    assert "svc.sh install" not in provisioner
+
+
+def test_runner_release_version_url_and_digest_are_pinned_together() -> None:
+    provisioner = RUNNER_PROVISIONER.read_text(encoding="utf-8")
+    assert 'RUNNER_VERSION="2.337.0"' in provisioner
+    assert (
+        'RUNNER_ASSET="actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"'
+        in provisioner
+    )
+    assert (
+        'RUNNER_ASSET_URL="https://github.com/actions/runner/releases/download/'
+        'v${RUNNER_VERSION}/${RUNNER_ASSET}"'
+        in provisioner
+    )
+    assert (
+        'RUNNER_ASSET_SHA256="70920811a4f8ad4328818682bca5c6469c1c942f'
+        'ab52448868071d0063816613"'
+        in provisioner
+    )
+    assert 'releases/tags/v${RUNNER_VERSION}' in provisioner
+    assert "releases/latest" not in provisioner
+    assert '[[ "$asset_url" == "$RUNNER_ASSET_URL" ]]' in provisioner
+    assert '[[ "$asset_digest" == "sha256:${RUNNER_ASSET_SHA256}" ]]' in provisioner
+    assert "--disableupdate" in provisioner
+
+
+def test_runner_registration_auth_stays_at_the_root_provisioning_boundary() -> None:
+    provisioner = RUNNER_PROVISIONER.read_text(encoding="utf-8")
+    root_gate = provisioner.index('[[ "$EUID" -eq 0 ]]')
+    auth_gate = provisioner.index("gh auth status")
+    token_call = provisioner.index("actions/runners/registration-token")
+    runner_config = provisioner.index('runuser -u "$RUNNER_USER" -- "$RUNNER_DIR/config.sh"')
+    assert root_gate < auth_gate < token_call < runner_config
+    assert 'runuser -u "$RUNNER_USER" -- gh' not in provisioner
+    assert "/root/.config/gh" not in provisioner
+    assert "cp " not in provisioner
+    assert 'current_main="$(gh api "repos/${REPOSITORY}/commits/main" --jq .sha)"' in provisioner
+    assert '[[ "$current_main" == "$TARGET_SHA" ]]' in provisioner
+
+
+def test_runner_root_cannot_be_replaced_by_the_unprivileged_runner_user() -> None:
+    installer = HOST_INSTALLER.read_text(encoding="utf-8")
+    provisioner = RUNNER_PROVISIONER.read_text(encoding="utf-8")
+    expected = 'install -d -o root -g "$RUNNER_USER" -m 0750 "$RUNNER_ROOT"'
+    assert expected in installer
+    assert expected in provisioner
+
+
+def test_failed_runner_provisioning_removes_the_exact_transient_registration() -> None:
+    provisioner = RUNNER_PROVISIONER.read_text(encoding="utf-8")
+    assert "cleanup_failed_provisioning" in provisioner
+    assert "trap cleanup_failed_provisioning EXIT" in provisioner
+    assert 'select(.name == \\"${runner_name}\\") | .id' in provisioner
+    assert 'actions/runners/${runner_id}' in provisioner
+    assert "trap - EXIT" in provisioner
+
+
+def test_idle_runner_reaper_never_kills_an_active_deployment() -> None:
+    provisioner = RUNNER_PROVISIONER.read_text(encoding="utf-8")
+    assert "RuntimeMaxSec" not in provisioner
+    assert '--on-active=61m' in provisioner
+    assert '--reap) reap_runner_registration' in provisioner
+    assert 'if [[ "$runner_status" == "online" && "$runner_busy" == "false" ]]; then' in provisioner
+    assert 'systemctl stop "$unit"' in provisioner
+    assert 'if [[ "$runner_busy" == "true" ]]; then' in provisioner
+    assert 'sleep 5' in provisioner
+    assert 'actions/runners/${runner_id}' in provisioner
+
+
+
+def _extract_shell_function(text: str, name: str) -> str:
+    match = re.search(rf"^{re.escape(name)}\(\) \{{\n(?P<body>.*?)^\}}$", text, re.MULTILINE | re.DOTALL)
+    assert match is not None, name
+    return f"{name}() {{\n{match.group('body')}}}\n"
+
+
+def test_idle_reaper_stops_only_idle_runner_and_deletes_exact_registration(tmp_path) -> None:
+    provisioner = RUNNER_PROVISIONER.read_text(encoding="utf-8")
+    shell = _extract_shell_function(provisioner, "fail") + _extract_shell_function(
+        provisioner, "reap_runner_registration"
+    )
+    shell = shell.replace(
+        '[[ "$EUID" -eq 0 ]] || fail "runner reaping must run as root"', ':'
+    )
+    state = tmp_path / "stopped"
+    log = tmp_path / "calls"
+    harness = f'''\nREPOSITORY=cavack/WFH-ORG\nSTATE={shlex.quote(str(state))}\nLOG={shlex.quote(str(log))}\ngh() {{\n  if [[ "$1" == auth ]]; then return 0; fi\n  if [[ "$1" == api && "${{2:-}}" == --method ]]; then echo delete >>"$LOG"; return 0; fi\n  if [[ -f "$STATE" ]]; then printf '17\\toffline\\tfalse\\n'; else printf '17\\tonline\\tfalse\\n'; fi\n}}\nsystemctl() {{ [[ "$1" == stop ]] && touch "$STATE" && echo stop >>"$LOG"; return 0; }}\nsleep() {{ :; }}\n{shell}\nreap_runner_registration wfh-production-aaaaaaaaaaaa-123-1\n'''
+    result = subprocess.run(["bash", "-c", harness], text=True, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert log.read_text(encoding="utf-8").splitlines() == ["stop", "delete"]
+
+
+def test_busy_reaper_never_stops_or_deletes_active_deployment(tmp_path) -> None:
+    provisioner = RUNNER_PROVISIONER.read_text(encoding="utf-8")
+    shell = _extract_shell_function(provisioner, "fail") + _extract_shell_function(
+        provisioner, "reap_runner_registration"
+    )
+    shell = shell.replace(
+        '[[ "$EUID" -eq 0 ]] || fail "runner reaping must run as root"', ':'
+    )
+    log = tmp_path / "calls"
+    harness = f'''\nREPOSITORY=cavack/WFH-ORG\nLOG={shlex.quote(str(log))}\ngh() {{\n  if [[ "$1" == auth ]]; then return 0; fi\n  if [[ "$1" == api && "${{2:-}}" == --method ]]; then echo delete >>"$LOG"; return 0; fi\n  printf '17\\tonline\\ttrue\\n'\n}}\nsystemctl() {{ echo stop >>"$LOG"; return 0; }}\nsleep() {{ :; }}\n{shell}\nreap_runner_registration wfh-production-aaaaaaaaaaaa-123-1\n'''
+    result = subprocess.run(["bash", "-c", harness], text=True, capture_output=True, check=False)
+    assert result.returncode != 0
+    assert "remained active past the bounded reap observation window" in result.stderr
+    assert not log.exists() or log.read_text(encoding="utf-8") == ""
+
+
+def test_runner_label_is_bound_to_the_exact_workflow_dispatch_run() -> None:
+    workflow = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    provisioner = RUNNER_PROVISIONER.read_text(encoding="utf-8")
+    assert 'wfh-production-${{ github.run_id }}-${{ github.run_attempt }}' in workflow
+    assert 'RUN_ID="${2:-}"' in provisioner
+    assert 'LABEL="wfh-production-${RUN_ID}-${run_attempt}"' in provisioner
+    assert 'runner_name="wfh-production-${TARGET_SHA:0:12}-${RUN_ID}-${run_attempt}"' in provisioner
+    assert 'actions/runs/${RUN_ID}' in provisioner
+    assert '[[ "$run_head" == "$TARGET_SHA" ]]' in provisioner
+    assert '[[ "$run_event" == "workflow_dispatch" ]]' in provisioner
+    assert '[[ "$run_branch" == "main" ]]' in provisioner
+    assert '[[ "$run_repository" == "$REPOSITORY" ]]' in provisioner
+    assert '.run_attempt' in provisioner
+    assert '[[ "$run_attempt" =~ ^[1-9][0-9]*$ ]]' in provisioner
+
+
+def test_runner_online_guard_covers_all_dispatch_specific_production_labels() -> None:
+    provisioner = RUNNER_PROVISIONER.read_text(encoding="utf-8")
+    assert 'startswith(\"wfh-production-\")' in provisioner
+    assert '.name == \"wfh-production\"' not in provisioner
+
+
+def test_runner_provisioning_is_serialized_by_a_root_owned_lock() -> None:
+    """Prevent concurrent registrations from sharing names or cleanup state."""
+    provisioner = RUNNER_PROVISIONER.read_text(encoding="utf-8")
+    assert 'LOCK_FILE="/run/wfh-production-runner.lock"' in provisioner
+    assert 'exec 9>"$LOCK_FILE"' in provisioner
+    assert 'flock -n 9' in provisioner
+    assert provisioner.index('flock -n 9') < provisioner.index("commits/main")
+
+
+def test_privileged_wrapper_never_executes_runner_writable_source() -> None:
+    wrapper = PRIVILEGED_WRAPPER.read_text(encoding="utf-8")
+    assert 'git -C "$DEPLOY_ROOT" fetch --no-tags origin main' in wrapper
+    assert '[[ "$(git -C "$DEPLOY_ROOT" rev-parse origin/main)" == "$SHA" ]]' in wrapper
+    assert 'git -C "$DEPLOY_ROOT" show "${SHA}:scripts/deploy_production.sh"' in wrapper
+    assert 'staged_deploy_script="$(mktemp' in wrapper
+    assert 'bash "$staged_deploy_script" </dev/null' in wrapper
+    assert '${CHECKOUT}/scripts/deploy_production.sh' not in wrapper
+    assert 'bash "$deploy_script"' not in wrapper
+
+
+def test_privileged_wrapper_binds_manifest_to_all_ci_identities() -> None:
+    workflow = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    wrapper = PRIVILEGED_WRAPPER.read_text(encoding="utf-8")
+    assert '--manifest "$RUNNER_TEMP/wfh-deploy-artifact/image-digests.txt"' in workflow
+    assert '--run-id "$GITHUB_RUN_ID"' in workflow
+    assert '--run-id) RUN_ID=' in wrapper
+    assert '--manifest) MANIFEST=' in wrapper
+    assert 'grep -Fxc "backend=$BACKEND_DIGEST" "$MANIFEST"' in wrapper
+    assert 'grep -Fxc "frontend=$FRONTEND_DIGEST" "$MANIFEST"' in wrapper
+    assert 'grep -Fxc "watchdog=$WATCHDOG_DIGEST" "$MANIFEST"' in wrapper
+    assert 'grep -Fxc "revision=$SHA" "$MANIFEST"' in wrapper
+    assert 'report.get("tested_backend_image_digest") == expected_backend_digest' not in wrapper
+    assert 'type(report.get("valid_until")) is int' in wrapper
+    assert '[[ "$(<"$BOUNDARY_REVISION")" == "$SHA" ]]' in wrapper
+
+
+def test_privileged_wrapper_validates_recovery_contract_and_canonical_hash(tmp_path) -> None:
+    """Reject recovery reports that were modified after canonical evaluation."""
+    wrapper = PRIVILEGED_WRAPPER.read_text(encoding="utf-8")
+    match = re.search(
+        r'/usr/bin/python3 - "\$RECOVERY_REPORT" "\$SHA" <<\'PY\' \|\| exit 1\n'
+        r'(?P<script>.*?)\nPY\n',
+        wrapper,
+        re.DOTALL,
+    )
+    assert match is not None
+    sha = "a" * 40
+    body = {
+        "contract_version": "release_recovery_gate_report_v1",
+        "evaluated_at": int(time.time()),
+        "valid_until": int(time.time()) + 3600,
+        "source_revision": sha,
+        "status": "READY_FOR_EXPLICIT_DISPATCH",
+        "blocking_reasons": [],
+        "trusted_ci_verification_sha256": "b" * 64,
+        "trusted_ci_run_id": 123,
+        "tested_backend_image_digest": "sha256:" + "c" * 64,
+        "backup_certification_sha256": "d" * 64,
+        "migration_rehearsal_sha256": "e" * 64,
+        "independent_restore_verification_sha256": "f" * 64,
+        "independent_restore_run_id": 456,
+        "independent_restore_artifact_id": 789,
+        "independent_restore_workflow_revision": sha,
+        "deployment_allowed": False,
+        "migration_allowed": False,
+        "telegram_send_allowed": False,
+        "feature_promotion_allowed": False,
+        "live_trading_allowed": False,
+        "required_next_authority": "EXPLICIT_WORKFLOW_DISPATCH",
+    }
+    report = {**body, "report_sha256": canonical_sha256(body)}
+    report_path = tmp_path / "release-recovery-gate.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    command = [sys.executable, "-", str(report_path), sha]
+    valid = subprocess.run(
+        command,
+        input=match.group("script"),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert valid.returncode == 0, valid.stderr
+
+    report["trusted_ci_run_id"] = 124
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    tampered = subprocess.run(
+        command,
+        input=match.group("script"),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert tampered.returncode != 0
+    assert "canonical hash mismatch" in tampered.stderr
+
+
+def test_privileged_wrapper_rebinds_all_artifacts_to_the_current_dispatch_run() -> None:
+    wrapper = PRIVILEGED_WRAPPER.read_text(encoding="utf-8")
+    assert 'repos/${REPOSITORY}/actions/runs/${RUN_ID}' in wrapper
+    assert 'run_event" == "workflow_dispatch"' in wrapper
+    assert 'run_path" == ".github/workflows/ci.yml"' in wrapper
+    for job in (
+        "backend",
+        "frontend",
+        "dependency-audit",
+        "container-validation",
+        "repository-hygiene",
+    ):
+        assert job in wrapper
+    assert 'repos/${REPOSITORY}/actions/jobs/${container_job_id}/logs' in wrapper
+    assert "WFH_TESTED_BACKEND_IMAGE_DIGEST" in wrapper
+    assert "WFH_TESTED_FRONTEND_IMAGE_DIGEST" in wrapper
+    assert "WFH_TESTED_WATCHDOG_IMAGE_DIGEST" in wrapper
+    assert "WFH_TESTED_IMAGE_BUNDLE_SHA256" in wrapper
+
+
+def test_privileged_wrapper_rejects_dirty_or_untrusted_production_checkout() -> None:
+    wrapper = PRIVILEGED_WRAPPER.read_text(encoding="utf-8")
+    assert '[[ -z "$(git -C "$DEPLOY_ROOT" status --porcelain' in wrapper
+    assert 'require_root_owned_path "$DEPLOY_ROOT"' in wrapper
+    assert 'require_root_owned_path "$DEPLOY_ROOT/.git"' in wrapper
+
+
+def test_runner_owned_artifacts_are_snapshotted_without_privileged_path_reopen() -> None:
+    wrapper = PRIVILEGED_WRAPPER.read_text(encoding="utf-8")
+    assert (
+        'runuser -u "$RUNNER_USER" -- /bin/cat -- "$MANIFEST" >"$manifest_snapshot"'
+        in wrapper
+    )
+    assert (
+        'runuser -u "$RUNNER_USER" -- /bin/cat -- "$BUNDLE" >"$staged_bundle_tmp"'
+        in wrapper
+    )
+    assert 'sha256sum "$BUNDLE"' not in wrapper
+    assert 'install -o root -g root -m 0640 "$BUNDLE"' not in wrapper
+
+
+
+def test_self_hosted_wrapper_switches_legacy_origin_transactionally() -> None:
+    wrapper = PRIVILEGED_WRAPPER.read_text(encoding="utf-8")
+    assert 'CANONICAL_ORIGIN="https://github.com/cavack/WFH-ORG.git"' in wrapper
+    assert 'LEGACY_ORIGIN="https://github.com/cavack/wfh.git"' in wrapper
+    assert 'old_origin="$(git -C "$DEPLOY_ROOT" remote get-url origin)"' in wrapper
+    assert 'git -C "$DEPLOY_ROOT" remote set-url origin "$CANONICAL_ORIGIN"' in wrapper
+    assert 'git -C "$DEPLOY_ROOT" remote set-url origin "$old_origin"' in wrapper
+    assert "restore_origin_on_failure" in wrapper
+
+
+def test_self_hosted_installer_grants_only_the_root_wrapper() -> None:
+    installer = HOST_INSTALLER.read_text(encoding="utf-8")
+    assert 'WRAPPER_SOURCE="${SCRIPT_DIR}/wfh-production-deploy"' in installer
+    assert 'PROVISIONER_SOURCE="${SCRIPT_DIR}/provision-ephemeral-runner.sh"' in installer
+    assert 'install -o root -g root -m 0755 "$WRAPPER_SOURCE" "$WRAPPER_TARGET"' in installer
+    assert (
+        'install -o root -g root -m 0750 "$PROVISIONER_SOURCE" "$PROVISIONER_TARGET"'
+        in installer
+    )
+    assert '[[ "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" == "$source_main" ]]' in installer
+    assert 'wfh-deploy ALL=(root) NOPASSWD: /usr/local/sbin/wfh-production-deploy' in installer
+    assert 'wfh-deploy ALL=(ALL) NOPASSWD: ALL' not in installer
+    assert 'wfh-deploy ALL=(root) NOPASSWD: ALL' not in installer
+    assert 'groupadd --system "$RUNNER_USER"' in installer
+    assert 'usermod --gid "$RUNNER_USER" --groups "" --lock' in installer
+    assert 'sudo -n -l -U "$RUNNER_USER"' in installer
+    assert 'expected_sudo="(root) NOPASSWD: ${WRAPPER_TARGET}"' in installer
+    assert "wfh-provision-production-runner" not in installer.split("cat >\"$sudoers_tmp\"", 1)[1]
+    assert "runner user must not belong to the docker group" in installer
+
+
 def test_privileged_deploy_does_not_use_workflow_run_head_code() -> None:
     """Keep privileged deployment on explicit main dispatch, never workflow_run code."""
     ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
@@ -154,20 +514,28 @@ def test_deployment_rejects_stale_main_revisions_at_both_boundaries() -> None:
     assert script_equality_gate in script_text
 
 
-def test_production_deploy_workflow_pins_ssh_host_identity() -> None:
+def test_production_deploy_workflow_has_no_reusable_remote_credential() -> None:
     text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
-    assert "WFH_PROD_KNOWN_HOSTS" in text
-    assert "StrictHostKeyChecking=yes" in text
-    assert "ssh-keyscan" not in text
-    assert "StrictHostKeyChecking=no" not in text
+    for forbidden in (
+        "WFH_PROD_SSH_KEY",
+        "WFH_DEPLOY_SSH_KEY",
+        "WFH_PROD_KNOWN_HOSTS",
+        "WFH_DEPLOY_KNOWN_HOSTS",
+        "StrictHostKeyChecking",
+        "ssh-keyscan",
+    ):
+        assert forbidden not in text
+    assert "wfh-production-${{ github.run_id }}-${{ github.run_attempt }}" in text
+    assert "environment: production" in text
 
 
-def test_production_deploy_long_running_ssh_uses_keepalive() -> None:
+def test_production_deploy_runs_locally_through_narrow_wrapper() -> None:
     text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
-    deploy_step = text.split("- name: Deploy exact CI revision", maxsplit=1)[1]
-    assert "ServerAliveInterval=30" in deploy_step
-    assert "ServerAliveCountMax=6" in deploy_step
-    assert "StrictHostKeyChecking=yes" in deploy_step
+    deploy_step = text.split("- name: Deploy exact CI revision on Production host", maxsplit=1)[1]
+    assert "sudo /usr/local/sbin/wfh-production-deploy" in deploy_step
+    assert "ssh " not in deploy_step
+    assert "scp " not in deploy_step
+    assert "timeout-minutes: 45" in text
 
 
 def test_host_deploy_uses_registered_backend_health_paths() -> None:
@@ -632,22 +1000,16 @@ def test_streamed_remote_deploy_does_not_let_compose_consume_script_tail() -> No
     assert all("</dev/null" in line for line in compose_up_lines)
 
 
-def test_remote_deploy_executes_staged_script_file_not_streamed_stdin() -> None:
+def test_self_hosted_deploy_uses_runner_temp_artifact_and_root_wrapper() -> None:
     text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
-    stage_step, deploy_step = text.split(
-        "      - name: Stage exact CI-tested release inputs on Production host\n", maxsplit=1
-    )[1].split("      - name: Deploy exact CI revision\n", maxsplit=1)
-    assert "scripts/deploy_production.sh" in stage_step
-    assert "local_script_sha256" in stage_step
-    assert "remote_script_sha256" in stage_step
-    assert 'test "$remote_script_sha256" = "$local_script_sha256"' in stage_step
-    assert 'remote_script="${remote_dir}/deploy_production.sh"' in stage_step
-    assert 'remote_script="${remote_dir}/deploy_production.sh"' in deploy_step
+    assert "path: ${{ runner.temp }}/wfh-deploy-artifact" in text
+    deploy_step = text.split("      - name: Deploy exact CI revision on Production host\n", maxsplit=1)[1]
+    assert "sudo /usr/local/sbin/wfh-production-deploy" in deploy_step
+    assert '--checkout "$GITHUB_WORKSPACE"' in deploy_step
+    assert '--bundle "$RUNNER_TEMP/wfh-deploy-artifact/wfh-tested-images.tar"' in deploy_step
     assert "bash -s" not in deploy_step
-    assert "< scripts/deploy_production.sh" not in deploy_step
-    assert "bash '$remote_script' </dev/null" in deploy_step
-    assert 'rm -f -- \\\"$remote_script\\\"' in deploy_step
-    assert 'rmdir -- \\\"$remote_dir\\\"' in deploy_step
+    assert "ssh " not in deploy_step
+    assert "scp " not in deploy_step
 
 
 def test_public_edge_gate_targets_the_dashboard_base_path() -> None:
@@ -659,26 +1021,24 @@ def test_public_edge_gate_targets_the_dashboard_base_path() -> None:
 
 
 
-def test_production_reusable_workflow_receives_only_explicit_deploy_secrets() -> None:
+def test_production_reusable_workflow_requires_no_deploy_secrets() -> None:
     ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
     deploy_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
     deploy_job = ci_text.split("\n  deploy-production:\n", maxsplit=1)[1]
-    expected = (
+    assert "secrets: inherit" not in deploy_job
+    assert "\n    secrets:\n" not in deploy_job
+    assert "\n    secrets:\n" not in deploy_text
+    for secret in (
         "WFH_PROD_HOST",
         "WFH_DEPLOY_HOST",
-        "WFH_PROD_PORT",
-        "WFH_DEPLOY_PORT",
-        "WFH_PROD_USER",
-        "WFH_DEPLOY_USER",
         "WFH_PROD_SSH_KEY",
         "WFH_DEPLOY_SSH_KEY",
         "WFH_PROD_KNOWN_HOSTS",
         "WFH_DEPLOY_KNOWN_HOSTS",
-    )
-    assert "secrets: inherit" not in deploy_job
-    for secret in expected:
-        assert f"      {secret}: ${{{{ secrets.{secret} }}}}" in deploy_job
-        assert f"      {secret}:\n        required: false" in deploy_text
+    ):
+        assert secret not in deploy_job
+        assert secret not in deploy_text
+
 
 def test_deploy_verifies_portable_bundle_config_digest_not_daemon_local_image_id() -> None:
     """Require portable bundle verification instead of daemon-local Docker image IDs."""

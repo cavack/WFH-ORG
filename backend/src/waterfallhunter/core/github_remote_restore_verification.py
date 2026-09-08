@@ -23,6 +23,7 @@ SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _WORKFLOW_PATH = ".github/workflows/restore.yml"
 _TRUSTED_WORKFLOW_REVISIONS = {
+    "cavack/WFH-ORG-dr": "66d966ffe2053da2665612938b17c78f8ba05ba9",
     "cavack/wfh-dr": "add3f01cf3b9f3e55d735294dae99d5a5792b5c2",
 }
 

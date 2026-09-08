@@ -580,9 +580,25 @@ def _cleanup_staging(
         )
 
 
+def _assert_canonical_application_origin() -> None:
+    """Fail closed before publishing when the source checkout is not canonical."""
+    try:
+        origin = subprocess.check_output(
+            ["git", "-C", str(WFH_REPOSITORY_ROOT), "remote", "get-url", "origin"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RemoteBackupCLIError("APPLICATION_REPOSITORY_IDENTITY_UNAVAILABLE") from error
+    if origin != "https://github.com/cavack/WFH-ORG.git":
+        raise RemoteBackupCLIError("EXPECTED_REPOSITORY=cavack/WFH-ORG")
+
+
 def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
+    if args.remote_repository != "cavack/WFH-ORG-dr":
+        parser.error("EXPECTED_DR_REPOSITORY=cavack/WFH-ORG-dr")
+    _assert_canonical_application_origin()
     staging_snapshot, bundle_dir, download_dir = _validated_layout(parser, args)
     release_published = False
     success = False

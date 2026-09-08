@@ -5,8 +5,12 @@ import pytest
 import waterfallhunter.core.github_remote_restore_verification as verifier
 
 
+@pytest.mark.parametrize("repository, revision", [
+    ("cavack/wfh-dr", "add3f01cf3b9f3e55d735294dae99d5a5792b5c2"),
+    ("cavack/WFH-ORG-dr", "66d966ffe2053da2665612938b17c78f8ba05ba9"),
+])
 def test_independent_restore_verification_binds_exact_run_artifact_and_restore(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, repository: str, revision: str,
 ) -> None:
     def fake_gh_json(endpoint: str) -> dict:
         if endpoint.endswith("/artifacts"):
@@ -23,11 +27,11 @@ def test_independent_restore_verification_binds_exact_run_artifact_and_restore(
             "name": "Verify or restore encrypted DR backup",
             "path": ".github/workflows/restore.yml",
             "head_branch": "main",
-            "head_sha": "add3f01cf3b9f3e55d735294dae99d5a5792b5c2",
+            "head_sha": revision,
             "event": "workflow_dispatch",
             "status": "completed",
             "conclusion": "success",
-            "repository": {"full_name": "cavack/wfh-dr"},
+            "repository": {"full_name": repository},
             "updated_at": "2026-08-28T22:38:34Z",
         }
 
@@ -43,7 +47,7 @@ def test_independent_restore_verification_binds_exact_run_artifact_and_restore(
     })
 
     result = verifier.resolve_github_independent_restore_verification(
-        repository="cavack/wfh-dr",
+        repository=repository,
         run_id=123,
         release_tag="wfh-dr-test",
         expected_plaintext_sha256="c" * 64,
@@ -52,7 +56,7 @@ def test_independent_restore_verification_binds_exact_run_artifact_and_restore(
     )
 
     assert result.github_host == "github.com"
-    assert result.workflow_revision == "add3f01cf3b9f3e55d735294dae99d5a5792b5c2"
+    assert result.workflow_revision == revision
     assert result.artifact_id == 456
     assert result.restore_file_sha256 == "c" * 64
     assert len(result.verification_report_sha256) == 64

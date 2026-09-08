@@ -40,6 +40,8 @@ def main() -> int:
     parser.add_argument("--github-run-id", required=True, type=int)
     args = parser.parse_args()
 
+    if args.github_repository != "cavack/WFH-ORG":
+        parser.error("EXPECTED_REPOSITORY=cavack/WFH-ORG")
     evidence_paths = [
         args.backup_certification,
         args.independent_restore_verification,
@@ -68,6 +70,8 @@ def main() -> int:
             else None
         ),
     }
+    if request["backup_certification"].get("remote_repository") != "cavack/WFH-ORG-dr":
+        parser.error("EXPECTED_DR_REPOSITORY=cavack/WFH-ORG-dr")
     report = evaluate_release_recovery_gate(
         request,
         github_repository=args.github_repository,
