@@ -67,16 +67,22 @@ def test_managed_connection_context_rolls_back_before_close(tmp_path: Path) -> N
     with connect_managed_sqlite(db_path) as conn:
         conn.execute("CREATE TABLE events (value INTEGER NOT NULL)")
 
-    with pytest.raises(RuntimeError, match="rollback sentinel"):
+    captured: dict[str, sqlite3.Connection] = {}
+
+    def insert_then_fail() -> None:
         with connect_managed_sqlite(db_path) as conn:
+            captured["conn"] = conn
             conn.execute("INSERT INTO events(value) VALUES (9)")
             raise RuntimeError("rollback sentinel")
+
+    with pytest.raises(RuntimeError, match="rollback sentinel"):
+        insert_then_fail()
 
     with sqlite3.connect(db_path) as check:
         assert check.execute("SELECT value FROM events").fetchall() == []
 
     with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
-        conn.execute("SELECT 1")
+        captured["conn"].execute("SELECT 1")
 
 
 def test_explicit_lifetime_connection_remains_open_until_explicit_close(tmp_path: Path) -> None:
