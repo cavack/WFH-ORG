@@ -454,12 +454,14 @@ class FeatureReplayStore:
         return connect_managed_sqlite(self.db_path, timeout=20.0)
 
     @staticmethod
-    def _pending_select_sql() -> str:
-        return """
+    def _pending_select_sql(*, with_frontier: bool = False) -> str:
+        frontier_clause = "AND s.id >= ?" if with_frontier else ""
+        return f"""
             WITH candidate_ids AS (
                 SELECT s.id
                 FROM production_evidence_snapshots AS s
                 WHERE s.schema_version = 'production_decision_evidence_v9'
+                  {frontier_clause}
                   AND NOT EXISTS (
                     SELECT 1 FROM production_feature_replay_results_v2 AS r
                     WHERE r.snapshot_id = s.id AND r.replay_version = ?
@@ -468,6 +470,7 @@ class FeatureReplayStore:
                 SELECT s.id
                 FROM production_evidence_snapshots AS s
                 WHERE s.schema_version = 'production_decision_evidence_v8'
+                  {frontier_clause}
                   AND s.production_evidence_complete_v5 = 1
                   AND s.decision_packet_complete = 1
                   AND s.code_sha256_v5 = ?
@@ -485,17 +488,38 @@ class FeatureReplayStore:
             ORDER BY s.id
         """
 
-    def pending(self, limit: int = 3) -> list[dict]:
+    def pending(
+        self,
+        limit: int = 3,
+        *,
+        start_snapshot_id: int | None = None,
+    ) -> list[dict]:
+        frontier = (
+            max(1, int(start_snapshot_id))
+            if start_snapshot_id is not None
+            else None
+        )
+        if frontier is None:
+            parameters = (
+                FeatureReplayEngine.VERSION,
+                source_tree_sha256()[0],
+                FeatureReplayEngine.VERSION,
+                max(1, int(limit)),
+            )
+        else:
+            parameters = (
+                frontier,
+                FeatureReplayEngine.VERSION,
+                frontier,
+                source_tree_sha256()[0],
+                FeatureReplayEngine.VERSION,
+                max(1, int(limit)),
+            )
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                self._pending_select_sql(),
-                (
-                    FeatureReplayEngine.VERSION,
-                    source_tree_sha256()[0],
-                    FeatureReplayEngine.VERSION,
-                    max(1, int(limit)),
-                ),
+                self._pending_select_sql(with_frontier=frontier is not None),
+                parameters,
             ).fetchall()
         return [
             {
@@ -505,6 +529,13 @@ class FeatureReplayStore:
             }
             for row in rows
         ]
+
+    def next_snapshot_id(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM production_evidence_snapshots"
+            ).fetchone()
+        return max(1, int(row[0]))
 
     def append(self, snapshot: dict, result: dict) -> bool:
         try:
@@ -591,19 +622,44 @@ class FeatureReplayWorker:
         self.engine = FeatureReplayEngine()
         self.batch_size = max(1, int(batch_size))
         self._running = True
+        self._next_snapshot_id: int | None = None
 
     def stop(self) -> None:
         self._running = False
 
     async def run_once(self) -> int:
+        initial_next_snapshot_id = None
+        if self._next_snapshot_id is None:
+            initial_next_snapshot_id = await asyncio.to_thread(
+                self.store.next_snapshot_id
+            )
+        snapshots = await asyncio.to_thread(
+            self.store.pending,
+            self.batch_size,
+            start_snapshot_id=self._next_snapshot_id,
+        )
+        if not snapshots:
+            if self._next_snapshot_id is None:
+                self._next_snapshot_id = initial_next_snapshot_id
+            return 0
+
         completed = 0
-        for snapshot in self.store.pending(self.batch_size):
+        for snapshot in snapshots:
             try:
                 result = await self.engine.replay(snapshot["payload"])
             except Exception as exc:
                 logger.exception("Feature replay failed for snapshot %s", snapshot["id"])
                 result = self.engine._packet(ERROR, {"error": str(exc)})
-            completed += int(self.store.append(snapshot, result))
+            appended = await asyncio.to_thread(
+                self.store.append,
+                snapshot,
+                result,
+            )
+            completed += int(appended)
+            if not appended:
+                self._next_snapshot_id = int(snapshot["id"])
+                break
+            self._next_snapshot_id = int(snapshot["id"]) + 1
         return completed
 
     async def run_forever(self, interval_seconds: float = 60.0) -> None:
