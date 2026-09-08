@@ -66,6 +66,7 @@ def _run() -> dict:
         "id": RUN_ID,
         "name": "CI",
         "head_sha": REVISION,
+        "head_branch": "main",
         "path": ".github/workflows/ci.yml",
         "event": "pull_request",
         "status": "completed",
@@ -115,6 +116,41 @@ def test_trusted_ci_is_derived_from_exact_github_run(
     assert set(trusted.required_job_ids) == set(_REQUIRED_STEPS)
     assert len(trusted.critical_steps_sha256) == 64
     assert len(trusted.verification_report_sha256) == 64
+
+
+def test_trusted_ci_accepts_successful_manual_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _run()
+    run["event"] = "workflow_dispatch"
+    _install_api_fakes(monkeypatch, run=run)
+
+    trusted = ci.resolve_github_ci_verification(
+        repository="cavack/WFH-ORG",
+        run_id=RUN_ID,
+        expected_revision=REVISION,
+    )
+
+    assert trusted.source_revision == REVISION
+
+
+def test_trusted_ci_rejects_manual_run_from_non_main(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _run()
+    run["event"] = "workflow_dispatch"
+    run["head_branch"] = "fix/untrusted"
+    _install_api_fakes(monkeypatch, run=run)
+
+    with pytest.raises(
+        ci.TrustedCIVerificationError,
+        match="GITHUB_CI_RUN_NOT_TRUSTED",
+    ):
+        ci.resolve_github_ci_verification(
+            repository="cavack/WFH-ORG",
+            run_id=RUN_ID,
+            expected_revision=REVISION,
+        )
 
 
 def test_trusted_ci_rejects_missing_image_marker(
