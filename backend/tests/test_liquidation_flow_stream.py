@@ -697,3 +697,58 @@ def test_close_all_drains_retirement_scheduled_by_cancelled_active_stream() -> N
         assert not manager._exchange_close_finalizer_tasks
 
     asyncio.run(scenario())
+
+
+def test_new_liquidation_exchange_rechecks_same_venue_retirement_before_admission(monkeypatch) -> None:
+    manager = WebSocketManager()
+    manager.exchange_close_timeout_seconds = 1.0
+    old_symbol = "RACING-OLD/USDT:USDT"
+    new_symbol = "RACING-NEW/USDT:USDT"
+    old_stream_id = f"bybit:{old_symbol}"
+
+    class OldExchange:
+        def __init__(self) -> None:
+            self.release = asyncio.Event()
+
+        async def close(self) -> None:
+            await self.release.wait()
+
+    old = OldExchange()
+    created: list[tuple[str, object]] = []
+
+    def new_exchange(ex_name: str) -> object:
+        replacement = object()
+        created.append((ex_name, replacement))
+        return replacement
+
+    manager.liquidation_exchanges[old_stream_id] = old
+    monkeypatch.setattr(manager, "_new_exchange", new_exchange)
+
+    async def scenario() -> None:
+        await manager._lock.acquire()
+        try:
+            replacement_task = asyncio.create_task(
+                manager._get_liquidation_exchange("bybit", new_symbol)
+            )
+            await asyncio.sleep(0)
+            manager._schedule_liquidation_exchange_retire("bybit", old_symbol)
+        finally:
+            manager._lock.release()
+
+        await asyncio.sleep(0.02)
+        assert replacement_task.done() is False
+        assert created == []
+
+        unrelated = await asyncio.wait_for(
+            manager._get_liquidation_exchange("okx", "RACING-OKX/USDT:USDT"),
+            timeout=0.05,
+        )
+        assert unrelated is created[-1][1]
+        assert created[-1][0] == "okx"
+
+        old.release.set()
+        replacement = await asyncio.wait_for(replacement_task, timeout=0.2)
+        assert replacement is created[-1][1]
+        assert created[-1][0] == "bybit"
+
+    asyncio.run(scenario())

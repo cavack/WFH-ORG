@@ -305,12 +305,17 @@ class WebSocketManager:
 
     async def _get_liquidation_exchange(self, ex_name: str, symbol: str) -> Any:
         stream_id = f"{ex_name}:{symbol}"
-        await self._await_liquidation_exchange_retirement(ex_name, symbol)
-        await self._await_exchange_close_finalizers(ex_name)
-        async with self._lock:
-            if stream_id not in self.liquidation_exchanges:
-                self.liquidation_exchanges[stream_id] = self._new_exchange(ex_name)
-            return self.liquidation_exchanges[stream_id]
+        while True:
+            await self._await_liquidation_venue_retirements(ex_name)
+            await self._await_exchange_close_finalizers(ex_name)
+            async with self._lock:
+                if self._liquidation_venue_retire_tasks(ex_name):
+                    continue
+                if self._exchange_close_finalizers_for_venue(ex_name):
+                    continue
+                if stream_id not in self.liquidation_exchanges:
+                    self.liquidation_exchanges[stream_id] = self._new_exchange(ex_name)
+                return self.liquidation_exchanges[stream_id]
 
     async def _get_shared_liquidation_exchange(self, ex_name: str) -> Any:
         async with self._lock:
@@ -1554,13 +1559,18 @@ class WebSocketManager:
                 self._exchange_close_finalizer_tasks.discard(close_task)
                 self._exchange_close_finalizer_venues.pop(close_task, None)
 
-    async def _await_exchange_close_finalizers(self, ex_name: str) -> None:
-        tasks = tuple(
+    def _exchange_close_finalizers_for_venue(
+        self, ex_name: str
+    ) -> tuple[asyncio.Task, ...]:
+        return tuple(
             task
             for task in self._exchange_close_finalizer_tasks
             if not task.done()
             and self._exchange_close_finalizer_venues.get(task) == ex_name
         )
+
+    async def _await_exchange_close_finalizers(self, ex_name: str) -> None:
+        tasks = self._exchange_close_finalizers_for_venue(ex_name)
         if not tasks:
             return
         logger.warning(
@@ -1572,6 +1582,21 @@ class WebSocketManager:
             *(asyncio.shield(task) for task in tasks),
             return_exceptions=True,
         )
+
+    def _liquidation_venue_retire_tasks(
+        self, ex_name: str
+    ) -> tuple[asyncio.Task, ...]:
+        prefix = f"{ex_name}:"
+        return tuple(
+            task
+            for retire_id, task in self._liquidation_exchange_retire_tasks.items()
+            if retire_id.startswith(prefix) and not task.done()
+        )
+
+    async def _await_liquidation_venue_retirements(self, ex_name: str) -> None:
+        tasks = self._liquidation_venue_retire_tasks(ex_name)
+        if tasks:
+            await asyncio.gather(*(asyncio.shield(task) for task in tasks))
 
     async def _await_liquidation_exchange_retirement(
         self, ex_name: str, symbol: str
