@@ -39,6 +39,58 @@ def test_managed_connection_enables_and_verifies_foreign_keys(
     assert enabled == (1,)
 
 
+def test_managed_connection_context_closes_immediately(tmp_path: Path) -> None:
+    """Managed contexts must not leave SQLite connections live until cyclic GC."""
+    db_path = tmp_path / "managed-close.db"
+
+    with connect_managed_sqlite(db_path) as conn:
+        assert conn.execute("SELECT 1").fetchone() == (1,)
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        conn.execute("SELECT 1")
+
+
+def test_managed_connection_context_commits_before_close(tmp_path: Path) -> None:
+    db_path = tmp_path / "managed-commit.db"
+
+    with connect_managed_sqlite(db_path) as conn:
+        conn.execute("CREATE TABLE events (value INTEGER NOT NULL)")
+        conn.execute("INSERT INTO events(value) VALUES (7)")
+
+    with sqlite3.connect(db_path) as check:
+        assert check.execute("SELECT value FROM events").fetchall() == [(7,)]
+
+
+def test_managed_connection_context_rolls_back_before_close(tmp_path: Path) -> None:
+    db_path = tmp_path / "managed-rollback.db"
+
+    with connect_managed_sqlite(db_path) as conn:
+        conn.execute("CREATE TABLE events (value INTEGER NOT NULL)")
+
+    with pytest.raises(RuntimeError, match="rollback sentinel"):
+        with connect_managed_sqlite(db_path) as conn:
+            conn.execute("INSERT INTO events(value) VALUES (9)")
+            raise RuntimeError("rollback sentinel")
+
+    with sqlite3.connect(db_path) as check:
+        assert check.execute("SELECT value FROM events").fetchall() == []
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        conn.execute("SELECT 1")
+
+
+def test_explicit_lifetime_connection_remains_open_until_explicit_close(tmp_path: Path) -> None:
+    db_path = tmp_path / "managed-explicit.db"
+    conn = connect_managed_sqlite(db_path)
+
+    assert conn.execute("SELECT 1").fetchone() == (1,)
+    assert conn.execute("SELECT 2").fetchone() == (2,)
+
+    conn.close()
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        conn.execute("SELECT 1")
+
+
 def test_managed_connection_rejects_orphan_signal_metadata(tmp_path: Path) -> None:
     db_path = migrate_test_database(tmp_path / "orphan.db")
 
