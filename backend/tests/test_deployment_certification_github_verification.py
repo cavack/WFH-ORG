@@ -117,6 +117,22 @@ def test_trusted_ci_is_derived_from_exact_github_run(
     assert len(trusted.verification_report_sha256) == 64
 
 
+def test_trusted_ci_accepts_successful_manual_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _run()
+    run["event"] = "workflow_dispatch"
+    _install_api_fakes(monkeypatch, run=run)
+
+    trusted = ci.resolve_github_ci_verification(
+        repository="cavack/WFH-ORG",
+        run_id=RUN_ID,
+        expected_revision=REVISION,
+    )
+
+    assert trusted.source_revision == REVISION
+
+
 def test_trusted_ci_rejects_missing_image_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
