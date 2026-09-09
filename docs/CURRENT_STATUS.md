@@ -78,8 +78,14 @@ Protected calibration remains unchanged unless separately scientifically validat
 2. [#20 — Provider debt: CoinGlass derivatives packet is unavailable under the current API plan](https://github.com/cavack/WFH-ORG/issues/20)
 3. [#21 — Operations debt: Telegram signal delivery cutover is intentionally disabled](https://github.com/cavack/WFH-ORG/issues/21)
 4. [#22 — Research follow-up: explain zero actionable signal yield without loosening protected calibration](https://github.com/cavack/WFH-ORG/issues/22)
+5. [#24 — CI tooling debt: GitHub agentic security check fails because the requested Copilot model is unsupported](https://github.com/cavack/WFH-ORG/issues/24)
 
 At this snapshot there were also 10 open Dependabot maintenance PRs. They are maintenance backlog, not evidence that the deployed application is currently broken.
+
+## Finalization CI note
+
+- `VERIFIED_FACT`: PR #23 passed all five required branch-protection checks (`backend`, `frontend`, `container-validation`, `dependency-audit`, `repository-hygiene`), plus SonarCloud and CodeQL.
+- `VERIFIED_FACT`: the separate optional `github-advanced-security` agentic job failed before producing a repository finding because its GitHub/Copilot runtime requested an unsupported model. This is tracked as CI tooling `DEBT` in [#24](https://github.com/cavack/WFH-ORG/issues/24), not as a WaterfallHunter product security defect.
 
 ## Historical incident records
 
