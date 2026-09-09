@@ -1,5 +1,8 @@
 # WaterfallHunter Project Handoff
 
+> [!IMPORTANT]
+> The authoritative time-bound return point is [Current Status](CURRENT_STATUS.md). At the 2026-09-09 finalization checkpoint, the deployed application revision is `e06d874797d936dd134655b606aab5f22ea221ac` and the release state is `DEPLOYED_UNVERIFIED`, not `PRODUCTION_VERIFIED`. Documentation-only commits may make GitHub `main` newer than the deployed application revision without changing Production.
+
 ## What this is
 
 WaterfallHunter is a `SIGNAL_ONLY` SHORT signal system for linear USDT perpetual futures, focused on pre-trigger/early long-liquidation cascade conditions. It does not place orders.
@@ -53,11 +56,15 @@ Telegram signal delivery is durable and release-cutover scoped. AI/Gemini is opt
 ```bash
 systemctl status waterfallhunter.service
 systemctl status waterfallhunter-healthcheck.timer
-cd /srv/waterfallhunter/app && docker compose ps
-curl -fsS http://127.0.0.1:3000/dashboard/ >/dev/null
+/srv/waterfallhunter/app/scripts/production_compose.sh ps
+curl -fsS https://waterfall.booksreadlive.online/dashboard/api/health
 ```
 
 Secrets are host/GitHub Environment owned and are never included in this handoff.
+## Historical runtime notes — context only
+
+The notes below preserve earlier incident/release lineage. They are not a substitute for the current release state in [Current Status](CURRENT_STATUS.md) or the open GitHub issues.
+
 Runtime freshness follow-up (2026-09-02): Production evidence after shared-evidence membership-delta stabilization showed FUEL-RICH/PRE-TRIGGER freshness within target but global p95 still failed because absolute state priority starved cheap WATCH evaluations. The follow-up scheduler fix reserves at most one existing evaluation slot for due WATCH work when no WATCH is in flight; total concurrency remains 12 and strategy/calibration semantics are unchanged.
 
 Release-image isolation follow-up (2026-09-02): a concurrent development build overwrote the shared `waterfallhunter-waterfall-backend` tag during an otherwise guarded Production deploy. The deployer now pins both target and previous runtime images to release-specific tags, uses a transient image override for cutover/rollback, and promotes a persistent `production-images.override.yml` only after exact runtime revision verification. `production_compose.sh` consumes that persistent override on systemd restarts.
