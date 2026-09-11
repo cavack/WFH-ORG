@@ -31,6 +31,12 @@ _DECISION_FIELDS = (
     "evidence_coverage_pct",
     "trade_plan",
     "block_reasons",
+    "current_block_reasons",
+    "decision_before_anti_chase",
+    "current_decision_before_terminal_retention",
+    "anti_chase_current",
+    "late_origin",
+    "late_transition",
     "reason_codes",
 )
 _AI_FIELDS = (

@@ -53,19 +53,33 @@ def _decision(candidate: dict[str, Any]) -> tuple[str, float]:
     return decision, float(readiness)
 
 
-def _diagnostic_reasons(candidate: dict[str, Any]) -> set[str]:
+def _current_diagnostic_reasons(candidate: dict[str, Any]) -> set[str]:
     packet = _record(_record(candidate.get("metrics")).get("entry_decision"))
     reasons = {
         str(reason)
         for reason in packet.get("reason_codes", ())
         if isinstance(reason, str) and reason in _DIAGNOSTIC_REASONS
     }
+    current_blocks = packet.get("current_block_reasons")
+    blocks = (
+        current_blocks
+        if isinstance(current_blocks, list)
+        else packet.get("block_reasons", ())
+    )
     reasons.update(
         str(reason)
-        for reason in packet.get("block_reasons", ())
+        for reason in blocks
         if isinstance(reason, str)
     )
     return reasons
+
+
+def _terminal_origin(candidate: dict[str, Any]) -> str | None:
+    packet = _record(_record(candidate.get("metrics")).get("entry_decision"))
+    if str(packet.get("decision") or "").upper() != "LATE":
+        return None
+    origin = str(packet.get("late_origin") or "").upper()
+    return origin if origin in {"ANTI_CHASE", "LIFECYCLE_EXHAUSTED"} else None
 
 
 def _zero_entry_ready_diagnostics(
@@ -74,14 +88,22 @@ def _zero_entry_ready_diagnostics(
     entry_ready_count: int,
 ) -> dict[str, Any]:
     counts: Counter[str] = Counter()
+    origins: Counter[str] = Counter()
     for candidate in candidates.values():
-        counts.update(_diagnostic_reasons(candidate))
+        counts.update(_current_diagnostic_reasons(candidate))
+        origin = _terminal_origin(candidate)
+        if origin is not None:
+            origins.update((origin,))
     total = len(candidates)
     ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     top = [
         {"reason": reason, "count": count, "share_pct": round(100.0 * count / total, 1) if total else 0.0}
         for reason, count in ordered[:8]
     ] if entry_ready_count == 0 else []
+    terminal_origins = [
+        {"origin": origin, "count": count, "share_pct": round(100.0 * count / total, 1) if total else 0.0}
+        for origin, count in sorted(origins.items(), key=lambda item: (-item[1], item[0]))
+    ]
     systemic = [
         {"reason": reason, "count": count, "share_pct": 100.0}
         for reason, count in ordered
@@ -91,6 +113,8 @@ def _zero_entry_ready_diagnostics(
         "entry_ready_zero": entry_ready_count == 0,
         "evaluated_candidates": total,
         "top_reasons": top,
+        "current_blockers": top,
+        "terminal_origins": terminal_origins,
         "pipeline_degraded": bool(systemic),
         "systemic_unavailable_reasons": systemic,
     }

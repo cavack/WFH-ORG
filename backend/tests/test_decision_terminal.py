@@ -129,3 +129,35 @@ def test_terminal_does_not_call_partial_unavailability_a_systemic_pipeline_failu
 
     assert diagnostics["pipeline_degraded"] is False
     assert diagnostics["systemic_unavailable_reasons"] == []
+
+
+def test_terminal_separates_current_blockers_from_retained_terminal_origins() -> None:
+    late = candidate("LATE", 71.7)
+    late["metrics"]["entry_decision"].update({
+        "late_origin": "ANTI_CHASE",
+        "block_reasons": ["ANTI_CHASE_HARD_BLOCK"],
+        "current_block_reasons": [],
+        "reason_codes": ["TIMING_CONFIRMED"],
+    })
+    blocked = candidate("NO_TRADE", 45.0)
+    blocked["metrics"]["entry_decision"].update({
+        "block_reasons": ["EXECUTION_UNAVAILABLE"],
+        "current_block_reasons": ["EXECUTION_UNAVAILABLE"],
+        "reason_codes": ["EXECUTION_DEGRADED"],
+    })
+
+    diagnostics = build_decision_terminal(
+        {"LATE": late, "BLOCKED": blocked},
+        recent_changes=[],
+    )["zero_entry_ready_diagnostics"]
+
+    assert {row["reason"] for row in diagnostics["current_blockers"]} == {
+        "EXECUTION_UNAVAILABLE",
+        "EXECUTION_DEGRADED",
+    }
+    assert diagnostics["terminal_origins"] == [
+        {"origin": "ANTI_CHASE", "count": 1, "share_pct": 50.0}
+    ]
+    assert "ANTI_CHASE_HARD_BLOCK" not in {
+        row["reason"] for row in diagnostics["current_blockers"]
+    }

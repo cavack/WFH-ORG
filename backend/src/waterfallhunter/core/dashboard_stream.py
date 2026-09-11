@@ -99,12 +99,22 @@ class DecisionDiagnosticReason(BaseModel):
     share_pct: float = Field(ge=0, le=100, allow_inf_nan=False)
 
 
+class DecisionTerminalOrigin(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    origin: str = Field(min_length=1)
+    count: int = Field(ge=0)
+    share_pct: float = Field(ge=0, le=100, allow_inf_nan=False)
+
+
 class ZeroEntryReadyDiagnostics(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     entry_ready_zero: bool
     evaluated_candidates: int = Field(ge=0)
     top_reasons: list[DecisionDiagnosticReason]
+    current_blockers: list[DecisionDiagnosticReason] = Field(default_factory=list)
+    terminal_origins: list[DecisionTerminalOrigin] = Field(default_factory=list)
     pipeline_degraded: bool = False
     systemic_unavailable_reasons: list[DecisionDiagnosticReason] = Field(default_factory=list)
 
