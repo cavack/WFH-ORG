@@ -154,12 +154,31 @@ def test_missing_execution_inputs_are_hard_blocked() -> None:
     assert "EXECUTION_UNAVAILABLE" in packet["block_reasons"]
 
 
-def test_candle_feature_extension_is_used_for_anti_chase() -> None:
+def test_candle_feature_signed_below_support_distance_is_used_for_anti_chase_fallback() -> None:
     metrics = strong_metrics()
-    metrics["candle_features"]["5m"]["extension_from_support_atr"] = 1.35
+    metrics["candle_features"]["5m"].update({
+        "distance_to_support_atr": -1.35,
+        "extension_from_support_atr": 1.35,
+        "support_broken": True,
+    })
     packet = decide(metrics, status="TRIGGERED")
     assert packet["decision"] == "LATE"
+    assert packet["evidence_summary"]["anti_chase_extension_atr"] == 1.35
     assert "ANTI_CHASE_HARD_BLOCK" in packet["block_reasons"]
+
+
+def test_above_support_absolute_distance_cannot_trigger_anti_chase_fallback() -> None:
+    metrics = strong_metrics()
+    metrics["candle_features"]["4h"].update({
+        "distance_to_support_atr": 3.2,
+        "extension_from_support_atr": 3.2,
+        "support_broken": False,
+    })
+    packet = decide(metrics, status="PRE-TRIGGER")
+    assert packet["decision"] == "ENTRY_READY"
+    assert packet["evidence_summary"]["anti_chase_extension_atr"] == 0.0
+    assert packet["anti_chase_current"]["currently_blocked"] is False
+    assert "ANTI_CHASE_HARD_BLOCK" not in packet["block_reasons"]
 
 
 def test_partial_cascade_coverage_uses_actual_available_weight() -> None:
@@ -694,3 +713,64 @@ def test_stale_evidence_precedes_anti_chase_late_classification() -> None:
     assert packet["decision"] == "NO_TRADE"
     assert "STALE_ANALYSIS" in packet["block_reasons"]
     assert "ANTI_CHASE_HARD_BLOCK" not in packet["block_reasons"]
+
+
+def test_retained_late_separates_terminal_origin_from_current_anti_chase_blocker() -> None:
+    extended = strong_metrics()
+    extended["anti_chase"] = {
+        "available": True,
+        "cross_timeframe": {
+            "max_post_break_extension_atr": 1.35,
+            "max_post_break_extension_timeframe": "15m",
+            "max_post_break_extension_confirmed_support_break": True,
+            "max_post_break_extension_single_close_below_support": False,
+        },
+    }
+    first = build_entry_decision(
+        extended,
+        "PRE-TRIGGER",
+        evaluated_at=1_788_000_000,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=21,
+    )
+    assert first["decision"] == "LATE"
+    assert first["late_origin"] == "ANTI_CHASE"
+    assert first["late_transition"] == {
+        "origin": "ANTI_CHASE",
+        "occurred_at": 1_788_000_000,
+        "extension_atr": 1.35,
+        "source_timeframe": "15m",
+        "confirmed_support_break": True,
+        "single_close_below_support": False,
+    }
+
+    safe = strong_metrics()
+    safe["anti_chase"] = {
+        "available": True,
+        "cross_timeframe": {
+            "max_post_break_extension_atr": 0.4,
+            "max_post_break_extension_timeframe": "5m",
+            "max_post_break_extension_confirmed_support_break": True,
+            "max_post_break_extension_single_close_below_support": False,
+        },
+    }
+    retained = build_entry_decision(
+        safe,
+        "PRE-TRIGGER",
+        evaluated_at=1_788_000_100,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=21,
+        previous_decision=first,
+    )
+
+    assert retained["decision"] == "LATE"
+    assert retained["late_origin"] == "ANTI_CHASE"
+    assert retained["block_reasons"] == ["ANTI_CHASE_HARD_BLOCK"]
+    assert retained["current_block_reasons"] == []
+    assert retained["current_decision_before_terminal_retention"] == "ENTRY_READY"
+    assert retained["decision_before_anti_chase"] == "ENTRY_READY"
+    assert retained["anti_chase_current"]["extension_atr"] == 0.4
+    assert retained["anti_chase_current"]["currently_blocked"] is False
+    assert retained["late_transition"] == first["late_transition"]

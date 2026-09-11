@@ -295,3 +295,40 @@ def test_anti_chase_fails_soft_without_features():
     assert result[
         "cross_timeframe"
     ] == {}
+
+
+def test_anti_chase_reports_causal_source_and_confirmed_only_shadow() -> None:
+    result = AntiChaseAnalyzer.measure(
+        {
+            "4h": {
+                "distance_to_support_atr": 2.4,
+                "support_broken": False,
+                "lower_high": True,
+            },
+            "1h": {
+                "distance_to_support_atr": -0.4,
+                "support_broken": False,
+                "lower_high": True,
+            },
+            "15m": {
+                "distance_to_support_atr": -1.4,
+                "support_broken": False,
+                "lower_high": True,
+            },
+            "5m": {
+                "distance_to_support_atr": -0.9,
+                "support_broken": True,
+                "lower_high": True,
+            },
+        }
+    )
+    cross = result["cross_timeframe"]
+
+    assert cross["max_post_break_extension_atr"] == 1.4
+    assert cross["max_post_break_extension_timeframe"] == "15m"
+    assert cross["max_post_break_extension_confirmed_support_break"] is False
+    assert cross["max_post_break_extension_single_close_below_support"] is True
+    assert cross["max_confirmed_post_break_extension_atr"] == 0.9
+    assert cross["max_confirmed_post_break_extension_timeframe"] == "5m"
+    assert cross["entry_timeframe_max_post_break_extension_atr"] == 1.4
+    assert cross["entry_timeframe_max_post_break_extension_timeframe"] == "15m"

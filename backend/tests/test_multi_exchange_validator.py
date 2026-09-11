@@ -554,7 +554,10 @@ async def test_cross_check_preserves_entry_decision_candle_contract(monkeypatch)
         reference_source="test",
     )
     features = result["metrics"]["candle_features"]
+    anti_chase = result["metrics"]["anti_chase"]
 
+    assert anti_chase["available"] is True
+    assert anti_chase["cross_timeframe"]["valid_timeframes"] == 4
     assert features["4h"]["valid"] is True
     assert features["4h"]["hype_context"] is True
     assert features["4h"]["bearish_close"] is True
