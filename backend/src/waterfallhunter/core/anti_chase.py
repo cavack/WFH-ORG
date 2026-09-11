@@ -140,6 +140,15 @@ class AntiChaseAnalyzer:
         post_break_extensions: list[
             float
         ] = []
+        post_break_extension_records: list[
+            tuple[float, str, bool, bool]
+        ] = []
+        confirmed_post_break_extension_records: list[
+            tuple[float, str]
+        ] = []
+        entry_post_break_extension_records: list[
+            tuple[float, str]
+        ] = []
 
         recent_high_drawdowns: list[
             float
@@ -264,6 +273,22 @@ class AntiChaseAnalyzer:
                 post_break_extensions.append(
                     post_break_extension_atr
                 )
+                post_break_extension_records.append(
+                    (
+                        post_break_extension_atr,
+                        timeframe,
+                        confirmed_support_break,
+                        single_close_below_support,
+                    )
+                )
+                if confirmed_support_break:
+                    confirmed_post_break_extension_records.append(
+                        (post_break_extension_atr, timeframe)
+                    )
+                if timeframe in {"15m", "5m"}:
+                    entry_post_break_extension_records.append(
+                        (post_break_extension_atr, timeframe)
+                    )
 
             if (
                 distance_from_high is not None
@@ -406,6 +431,22 @@ class AntiChaseAnalyzer:
                 timeframe
             ] = timeframe_packet
 
+        max_post_break_record = (
+            max(post_break_extension_records, key=lambda item: item[0])
+            if post_break_extension_records
+            else None
+        )
+        max_confirmed_record = (
+            max(confirmed_post_break_extension_records, key=lambda item: item[0])
+            if confirmed_post_break_extension_records
+            else None
+        )
+        max_entry_record = (
+            max(entry_post_break_extension_records, key=lambda item: item[0])
+            if entry_post_break_extension_records
+            else None
+        )
+
         cross_timeframe = {
             "valid_timeframes": (
                 valid_timeframes
@@ -423,14 +464,44 @@ class AntiChaseAnalyzer:
                 lower_high_count
             ),
             "max_post_break_extension_atr": (
-                round(
-                    max(
-                        post_break_extensions
-                    ),
-                    4,
-                )
-                if post_break_extensions
+                round(max_post_break_record[0], 4)
+                if max_post_break_record
                 else 0.0
+            ),
+            "max_post_break_extension_timeframe": (
+                max_post_break_record[1]
+                if max_post_break_record
+                else None
+            ),
+            "max_post_break_extension_confirmed_support_break": (
+                max_post_break_record[2]
+                if max_post_break_record
+                else None
+            ),
+            "max_post_break_extension_single_close_below_support": (
+                max_post_break_record[3]
+                if max_post_break_record
+                else None
+            ),
+            "max_confirmed_post_break_extension_atr": (
+                round(max_confirmed_record[0], 4)
+                if max_confirmed_record
+                else 0.0
+            ),
+            "max_confirmed_post_break_extension_timeframe": (
+                max_confirmed_record[1]
+                if max_confirmed_record
+                else None
+            ),
+            "entry_timeframe_max_post_break_extension_atr": (
+                round(max_entry_record[0], 4)
+                if max_entry_record
+                else 0.0
+            ),
+            "entry_timeframe_max_post_break_extension_timeframe": (
+                max_entry_record[1]
+                if max_entry_record
+                else None
             ),
             "max_distance_from_recent_high_pct": (
                 round(

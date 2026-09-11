@@ -7,6 +7,7 @@ from typing import Any, Dict
 from waterfallhunter.config import settings
 from waterfallhunter.core.candle_analyzer import MultiTimeframeAnalyzer
 from waterfallhunter.core.cascade_intelligence import build_cascade_evidence
+from waterfallhunter.core.anti_chase import AntiChaseAnalyzer
 from waterfallhunter.core.coinglass import CoinGlassDerivativesClient
 from waterfallhunter.core.derivatives import DerivativesAnalyzer
 from waterfallhunter.core.microstructure import MicrostructureAnalyzer
@@ -2494,6 +2495,11 @@ class MultiExchangeValidator:
                     )
                 ),
             }
+
+        metrics["anti_chase"] = AntiChaseAnalyzer.measure(
+            metrics.get("candle_features", {}),
+            metrics.get("relative_weakness_features"),
+        )
 
         metrics[
             "watch_score"
