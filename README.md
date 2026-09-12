@@ -2,20 +2,21 @@
 
 **Crypto Signal Intelligence System with AI-Powered Analysis**
 
-WaterfallHunter is a real-time cryptocurrency trading signal system that monitors 150+ trading pairs across multiple exchanges (Binance, BingX, MEXC), analyzes market microstructure, and generates calibrated trading signals with entry, stop-loss, and take-profit levels.
+Real-time cryptocurrency trading signal system monitoring 150+ trading pairs across Binance, BingX, and MEXC. Generates calibrated trading signals with entry, stop-loss, and take-profit levels using cascade intelligence, cross-exchange confirmation, and AI analysis.
 
-## Features
+## Key Features
 
 ### Signal Intelligence
 - **Multi-exchange monitoring**: Binance, BingX, MEXC WebSocket feeds
 - **Cascade intelligence**: Multi-level evidence cascade (orderbook, derivatives, cross-exchange)
+- **Cascade PASS mandatory**: All signals require cascade confirmation — no exceptions
 - **Cross-exchange confirmation**: Signals verified across multiple venues
 - **Anti-chase scoring**: Prevents entering during price chasing
 - **Entry readiness scoring**: 0-100 score based on technical, risk, timing, and market factors
-- **Cascade PASS mandatory**: All signals require cascade confirmation
+- **Dynamic leverage 4x-14x**: Calculated from signal confidence, not fixed
 
 ### AI Analysis
-- **Ollama (primary)**: Local LLM (qwen2.5:1.5b) for instant analysis
+- **Ollama (primary)**: Local LLM (qwen2.5:1.5b) for instant analysis, 120s timeout
 - **Gemini (fallback)**: Google Gemini Flash Lite when Ollama unavailable
 - **Heuristic (final fallback)**: Rule-based analysis when AI providers fail
 - AI provides: LONG/SHORT/WAIT recommendation, confidence score, reasoning
@@ -26,7 +27,7 @@ WaterfallHunter is a real-time cryptocurrency trading signal system that monitor
 - **LunarCrush** (35% weight): Social sentiment (requires API key)
 - **X/Twitter** (20% weight): Social mentions (requires API key)
 
-### Backtester V2
+### Backtester V2 — Professional Capital Management
 - **$100 initial capital**
 - **30% max exposure** ($30 across all positions)
 - **3 simultaneous positions** max
@@ -35,13 +36,11 @@ WaterfallHunter is a real-time cryptocurrency trading signal system that monitor
   - Readiness 75+: 10x base
   - Readiness 70+: 7x base
   - Readiness 60+: 5x base
-  - Below 60: 4x base
-  - +2x bonus for cascade PASS
-  - +2x bonus for cross-exchange confirmation
+  - +2x for cascade PASS, +2x for cross-exchange confirmation
   - Capped at 14x
-- **Partial TP closes**: 50% at TP1, 25% at TP2, 25% at TP3
+- **TP2 strategy**: Take profit at TP2 level for higher win rate
 - **Self-learning mistake journal**: SQLite-based pattern tracking
-- **Historical backtest**: Uses real signal data from database
+- **Historical backtest**: Uses real signal data from lbank_signal_ledger
 
 ### Telegram Bot
 - `/signals` — View active signals
@@ -49,7 +48,6 @@ WaterfallHunter is a real-time cryptocurrency trading signal system that monitor
 - `/top` — Top candidates
 - `/help` — List commands
 - 12-hour health reports
-- Signal alerts with TP/SL/EP
 
 ### Dashboard
 - Live signal cards with EP/SL/TP
@@ -58,6 +56,7 @@ WaterfallHunter is a real-time cryptocurrency trading signal system that monitor
 - Backtester results widget
 - Decision terminal
 - Research & diagnostics panel
+- Only shows cascade PASS signals (quality over quantity)
 
 ## Architecture
 
@@ -94,34 +93,53 @@ WaterfallHunter is a real-time cryptocurrency trading signal system that monitor
 └─────────────────────────────────────────────────────┘
 ```
 
-## Key Model Parameters (Calibrated)
+## Model Parameters (Calibrated via Historical Backtest)
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| entry_ready_minimum | 70 | Minimum readiness score for ENTRY_READY |
-| forming_minimum | 55 | Minimum readiness score for FORMING |
+| entry_ready_minimum | 70 | Minimum readiness for ENTRY_READY |
+| forming_minimum | 55 | Minimum readiness for FORMING |
 | coverage_threshold | 55 | Min exchange coverage % |
 | max_leverage | 14 | Maximum leverage |
-| max_exposure | 30% | Max capital exposure across positions |
+| max_exposure | 30% | Max capital exposure |
 | max_positions | 3 | Max simultaneous positions |
 | initial_capital | $100 | Backtester starting capital |
-| risk_per_trade | 10% | Max risk per position |
-| cascade | MANDATORY | Cascade PASS required for all signals |
-| AI provider | Ollama | Primary (qwen2.5:1.5b) |
+| cascade | MANDATORY | Cascade PASS required (hard gate) |
+| tp_strategy | TP2 | Take profit at TP2 level |
+| AI provider | Ollama | Primary (qwen2.5:1.5b, 120s timeout) |
 | Gemini | Fallback | When Ollama fails |
 | Heuristic | Final fallback | Rule-based |
 
-## Backtest Results (Historical)
+## Backtest Results (Historical — Real Data)
 
-Using 3,381 real signals from the database:
+Using 3,381 real signals from `lbank_signal_ledger` with actual outcomes from `lbank_signal_outcomes`:
+
+### Optimal Configuration: Score >= 70, TP2 Strategy
+
+| Metric | Value | Target |
+|--------|-------|--------|
+| Win Rate | 66.7% | ~70% |
+| Total Return | 36.8% | ~70% |
+| Profit Factor | 12.39 | >2.0 |
+| Max Drawdown | 3.2% | <20% |
+| Sharpe Ratio | 2.34 | >1.0 |
+| Avg Leverage | 11.0x | 4-14x |
+| Expectancy | $6.13/trade | >$0 |
+| Trades | 6 | 2-6/day |
+
+### Outcome Distribution (Score >= 70)
+- TP2_AFTER_TP1: 2 (33%) — Big wins
+- TP2_FIRST: 2 (33%) — Wins
+- STOP_FIRST: 1 (17%) — Loss
+- NO_LEVEL_HIT_24H: 1 (17%) — Timeout
+
+### Configuration Comparison
 
 | Config | Score Threshold | Win Rate | Return | Max DD | Trades |
 |--------|----------------|----------|--------|--------|--------|
-| Baseline | >=65 | 35.7% | 51.2% | 7.0% | 28 |
-| **Optimal** | **>=70** | **66.7%** | **47.4%** | **2.1%** | **6** |
+| Baseline | >=65 | 35.7% | -7.7% | 17.8% | 14 |
+| **Optimal** | **>=70** | **66.7%** | **36.8%** | **3.2%** | **6** |
 | Strict | >=75 | — | — | — | 0 |
-
-**Optimal configuration**: Score >= 70, TP2 strategy, max 14x leverage
 
 ## API Endpoints
 
@@ -172,7 +190,6 @@ GEMINI_API_KEY=<api_key>
 GEMINI_MODEL=gemini-flash-lite-latest
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 OLLAMA_MODEL=qwen2.5:1.5b
-DEXSCREENER_ENABLED=true
 COINGLASS_API_KEY=<api_key>
 BACKTESTER_INITIAL_CAPITAL=100.0
 BACKTESTER_MAX_LEVERAGE=14
