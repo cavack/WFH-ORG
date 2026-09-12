@@ -4943,34 +4943,22 @@ async def get_raw_candidates(response: Response):
 
 @app.get("/api/backtest/results")
 async def backtest_results():
-    """Backtester results endpoint."""
+    """Backtester V2 results - $100 capital, 30% exposure, 3 positions, 4-18x leverage."""
     try:
-        from waterfallhunter.core.backtester import Backtester
-        bt = Backtester(db_path=settings.backtester_db_path)
+        from waterfallhunter.core.backtester_v2 import BacktesterV2
+        bt = BacktesterV2(db_path="/app/data/backtest_v2.db")
         metrics = bt.compute_metrics()
         equity = bt.get_equity_curve()
         trades = bt.get_trade_history(limit=20)
         mistakes = bt.get_top_mistakes(limit=10)
         return {
-            "stats": {
-                "current_capital": bt.current_capital(),
-                "total_trades": bt.total_trades(),
-                "wins": bt.wins(),
-                "losses": bt.losses(),
-                "win_rate": metrics.get("win_rate", 0),
-                "max_drawdown_pct": metrics.get("max_drawdown_pct", 0),
-                "profit_factor": metrics.get("profit_factor", 0),
-                "sharpe_ratio": metrics.get("sharpe_ratio", 0),
-                "expectancy": metrics.get("expectancy", 0),
-            },
+            "stats": metrics,
             "equity": equity,
             "trades": trades,
             "mistakes": mistakes,
         }
     except Exception as exc:
         return {"error": str(exc), "stats": {}, "equity": [], "trades": [], "mistakes": []}
-
-
 @app.get("/api/fundamental")
 async def fundamental_score_endpoint(symbol: str = ""):
     """Fundamental score endpoint."""

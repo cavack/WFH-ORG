@@ -58,7 +58,8 @@ _GEMINI_URL_TMPL = (
 _CACHE_TTL_SECONDS = 300          # 5 minutes
 _RATE_LIMIT_MAX_REQUESTS = 10    # per minute
 _RATE_LIMIT_WINDOW_SECONDS = 60  # 1 minute window
-_HTTP_TIMEOUT = 30.0             # seconds for both providers
+_HTTP_TIMEOUT = 30.0             # seconds for Gemini
+_OLLAMA_TIMEOUT = 120.0            # seconds for Ollama (CPU mode is slow)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -539,19 +540,7 @@ class AISignalAdvisor:
         # ── Build the prompt once (shared by Gemini & Ollama) ──
         prompt = _build_prompt(signal_data)
 
-        # ── Try Gemini ──
-        if self.gemini_key:
-            try:
-                result = await self._call_gemini(prompt)
-                if result is not None:
-                    await self._set_cached(symbol, result)
-                    return result
-            except Exception as exc:
-                logger.warning("Gemini analysis failed: %s", exc)
-        else:
-            logger.debug("Gemini API key not configured, skipping Gemini")
-
-        # ── Try Ollama ──
+        # ── Try Ollama FIRST (local, reliable, no rate limits) ──
         if self.ollama_url:
             try:
                 result = await self._call_ollama(prompt)
@@ -563,8 +552,20 @@ class AISignalAdvisor:
         else:
             logger.debug("Ollama URL not configured, skipping Ollama")
 
-        # ── Fallback to heuristic ──
-        logger.info("Both AI providers unavailable, using heuristic analysis for %s", symbol)
+        # ── Try Gemini as fallback ──
+        if self.gemini_key:
+            try:
+                result = await self._call_gemini(prompt)
+                if result is not None:
+                    await self._set_cached(symbol, result)
+                    return result
+            except Exception as exc:
+                logger.warning("Gemini analysis failed: %s", exc)
+        else:
+            logger.debug("Gemini API key not configured, skipping Gemini")
+
+        # ── Final fallback to heuristic ──
+        logger.info("All AI providers unavailable, using heuristic analysis for %s", symbol)
         result = _heuristic_analysis(signal_data)
         await self._set_cached(symbol, result)
         return result
@@ -628,12 +629,12 @@ class AISignalAdvisor:
             "stream": False,
             "options": {
                 "temperature": 0.3,
-                "num_predict": 1024,
+                "num_predict": 256,
             },
         }
 
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-            logger.debug("Calling Ollama API: model=%s, url=%s", self.ollama_model, url)
+        async with httpx.AsyncClient(timeout=_OLLAMA_TIMEOUT) as client:
+            logger.debug("Calling Ollama API: model=%s, url=%s (timeout=%ss)", self.ollama_model, url, _OLLAMA_TIMEOUT)
             response = await client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
