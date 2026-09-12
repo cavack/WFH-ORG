@@ -616,27 +616,26 @@ def _base_decision(
 ) -> str:
     if status == "EXHAUSTED":
         return "LATE"
-    if block_reasons:
-        if "STRUCTURE_INVALIDATED" in block_reasons:
-            return "INVALIDATED"
-        return "NO_TRADE"
+    # STRUCTURE_INVALIDATED is always a hard block
+    if "STRUCTURE_INVALIDATED" in block_reasons:
+        return "INVALIDATED"
     # MANDATORY: cascade must PASS for any signal
-    # If cascade is FAIL, force NO_TRADE regardless of readiness
     cascade_ok = cascade_status == "PASS"
+    if not cascade_ok:
+        return "NO_TRADE"
+    # Other block_reasons (EXECUTION_UNAVAILABLE, TRADE_PLAN_EXPIRED) are now
+    # scoring penalties, not hard blocks. They reduce readiness but don't force NO_TRADE.
+    # Only cascade FAIL and STRUCTURE_INVALIDATED are hard blocks.
     
     gates_pass = (
         readiness >= policy.entry_ready_minimum
         and coverage_pct >= 55.0
-        and direction_ok and execution_ok and trade_plan_ok
-        and cascade_ok  # cascade PASS mandatory
+        and direction_ok and trade_plan_ok
     )
     if gates_pass:
         decision = "ACTIVE" if status == "TRIGGERED" else "ENTRY_READY"
-    elif not cascade_ok:
-        decision = "NO_TRADE"  # cascade FAIL = no trade
     else:
         decision = "FORMING" if readiness >= policy.forming_minimum else "NO_TRADE"
-    # Anti-chase is now a scoring penalty, not a hard block.
     return decision
 
 
@@ -831,7 +830,7 @@ def build_entry_decision(
     decision = _base_decision(
         block_reasons=block_reasons, anti_chase_late=anti_chase_late,
         status=status,
-    cascade_status=str((metrics.get("evidence_summary") or {}).get("cascade", {}).get("status", "FAIL")), readiness=readiness,
+    cascade_status=str((metrics.get("cascade_intelligence") or {}).get("status", "FAIL")), readiness=readiness,
         coverage_pct=coverage_pct, direction_ok=direction_ok, timing_ok=timing >= 5.0,
         execution_ok=execution_ok, cross_ok=cross_ok, trade_plan_ok=trade_plan_ok, policy=policy,
     )
