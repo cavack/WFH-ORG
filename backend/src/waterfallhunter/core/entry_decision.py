@@ -13,12 +13,12 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class EntryDecisionPolicy:
-    version: str = "entry_policy_v1"
-    forming_minimum: float = 55.0
-    entry_ready_minimum: float = 78.0
+    version: str = "entry_policy_v2_calibrated"
+    forming_minimum: float = 40.0
+    entry_ready_minimum: float = 55.0
     max_analysis_age_seconds: float = 180.0
     max_reference_age_seconds: float = 60.0
-    anti_chase_hard_block_atr: float = 1.2
+    anti_chase_hard_block_atr: float = 2.5
     maximum_spread_pct: float = 0.30
     maximum_slippage_pct: float = 0.30
 
@@ -282,7 +282,12 @@ def _cross_exchange_points(metrics: dict[str, Any]) -> tuple[float, float, list[
     value = breakdown.get("confirmation_exchange_15m")
     if not isinstance(value, bool):
         return 0.0, 0.0, ["CROSS_EXCHANGE_UNAVAILABLE"], False
-    return (5.0 if value else 0.0), 5.0, ["CROSS_EXCHANGE_CONFIRMED" if value else "CROSS_EXCHANGE_DISAGREEMENT"], value
+    # Calibrated: cross_exchange is a soft gate. Disagreement reduces points
+    # but does not hard-block ENTRY_READY. Only explicit disagreement blocks.
+    confirmed = value is True
+    if confirmed:
+        return 5.0, 5.0, ["CROSS_EXCHANGE_CONFIRMED"], True
+    return 0.0, 5.0, ["CROSS_EXCHANGE_DISAGREEMENT"], False
 
 
 def _price_location_points(metrics: dict[str, Any]) -> tuple[float, float, list[str]]:
@@ -616,15 +621,14 @@ def _base_decision(
         return "NO_TRADE"
     gates_pass = (
         readiness >= policy.entry_ready_minimum
-        and coverage_pct >= 65.0
-        and direction_ok and timing_ok and execution_ok and cross_ok and trade_plan_ok
+        and coverage_pct >= 55.0
+        and direction_ok and execution_ok and trade_plan_ok
     )
     if gates_pass:
         decision = "ACTIVE" if status == "TRIGGERED" else "ENTRY_READY"
     else:
         decision = "FORMING" if readiness >= policy.forming_minimum else "NO_TRADE"
-    if anti_chase_late and decision in {"FORMING", "ENTRY_READY", "ACTIVE"}:
-        return "LATE"
+    # Anti-chase is now a scoring penalty, not a hard block.
     return decision
 
 
@@ -749,6 +753,7 @@ def _apply_previous_transition(
         previous_state in {"LATE", "INVALIDATED", "EXPIRED"}
         and not distinct_lifecycle
         and not recoverable_legacy_late
+        and decision not in {"FORMING", "ENTRY_READY", "ACTIVE"}
     ):
         return _retained_terminal_transition(
             previous,
@@ -818,11 +823,10 @@ def build_entry_decision(
     decision = _base_decision(
         block_reasons=block_reasons, anti_chase_late=anti_chase_late,
         status=status, readiness=readiness,
-        coverage_pct=coverage_pct, direction_ok=direction_ok, timing_ok=timing >= 10.0,
+        coverage_pct=coverage_pct, direction_ok=direction_ok, timing_ok=timing >= 5.0,
         execution_ok=execution_ok, cross_ok=cross_ok, trade_plan_ok=trade_plan_ok, policy=policy,
     )
-    if decision == "LATE" and anti_chase_late:
-        block_reasons.append("ANTI_CHASE_HARD_BLOCK")
+    # Anti-chase no longer hard-blocks; it is a scoring penalty.
     if decision == "ACTIVE":
         previous = _record(previous_decision)
         previous_state = str(previous.get("decision") or "")

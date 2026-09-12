@@ -151,12 +151,22 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
   const blocks = Array.isArray(decision.block_reasons)
     ? decision.block_reasons.filter((value): value is string => typeof value === "string")
     : [];
+  const currentBlocks = Array.isArray(decision.current_block_reasons)
+    ? decision.current_block_reasons.filter((value): value is string => typeof value === "string")
+    : [];
   const reasons = Array.isArray(decision.reason_codes)
     ? decision.reason_codes.filter((value): value is string => typeof value === "string").slice(0, 8)
     : [];
   const readinessText = !evidenceUnavailable && readiness !== undefined
     ? readiness.toFixed(1)
     : "—";
+  const antiChaseCurrent = record(decision.anti_chase_current);
+  const antiChaseAvailable = antiChaseCurrent.available === true;
+  const antiChaseBlocked = antiChaseCurrent.currently_blocked === true;
+  const antiChaseExt = finite(antiChaseCurrent.extension_atr);
+  const antiChaseThreshold = finite(antiChaseCurrent.threshold_atr);
+  const antiChaseSource = typeof antiChaseCurrent.source === "string" ? antiChaseCurrent.source : undefined;
+  const decisionBeforeAntiChase = typeof decision.decision_before_anti_chase === "string" ? decision.decision_before_anti_chase : undefined;
   return (
     <article className={`panel overflow-hidden border ${state === "ENTRY_READY" ? "border-emerald-500/35" : "border-slate-800"}`}>
       <div className="p-4 sm:p-5">
@@ -181,10 +191,41 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
           </div>
         )}
         <EvidenceGrid evidence={evidence} />
-        {blocks.length > 0 ? (
-          <div className="mt-4 flex gap-2 rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
+        {/* Anti-chase provenance section */}
+        {antiChaseAvailable ? (
+          <div className={`mt-3 rounded-lg border px-3 py-2 text-xs ${antiChaseBlocked ? "border-rose-500/30 bg-rose-500/10 text-rose-100" : "border-emerald-500/20 bg-emerald-500/5 text-emerald-100"}`}>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold">Anti-chase</span>
+              <span className={`status-pill border ${antiChaseBlocked ? "border-rose-400/30 bg-rose-500/15 text-rose-200" : "border-emerald-400/25 bg-emerald-500/10 text-emerald-200"}`}>
+                {antiChaseBlocked ? "BLOCKED" : "CLEAR"}
+              </span>
+              <span className="font-mono text-slate-400">
+                ext {antiChaseExt === undefined ? "—" : antiChaseExt.toFixed(2)} / {antiChaseThreshold === undefined ? "1.2" : antiChaseThreshold.toFixed(1)} ATR
+              </span>
+              {antiChaseSource ? <span className="text-slate-500">· {antiChaseSource}</span> : null}
+            </div>
+            {decisionBeforeAntiChase ? (
+              <p className="mt-1 text-slate-400">Decision before anti-chase: <span className="font-mono text-slate-300">{decisionBeforeAntiChase}</span></p>
+            ) : null}
+          </div>
+        ) : null}
+        {/* Current vs retained blockers */}
+        {currentBlocks.length > 0 ? (
+          <div className="mt-3 flex gap-2 rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
             <ShieldAlert size={15} className="shrink-0" />
-            <span>{blocks.join(" · ").replaceAll("_", " ")}</span>
+            <div>
+              <span className="font-semibold">Current blockers:</span>
+              <span className="ml-1">{currentBlocks.join(" · ").replaceAll("_", " ")}</span>
+            </div>
+          </div>
+        ) : null}
+        {blocks.length > 0 ? (
+          <div className="mt-2 flex gap-2 rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-2 text-xs text-slate-400">
+            <AlertTriangle size={15} className="shrink-0" />
+            <div>
+              <span className="font-semibold text-slate-500">Retained terminal origin:</span>
+              <span className="ml-1">{blocks.join(" · ").replaceAll("_", " ")}</span>
+            </div>
           </div>
         ) : null}
         {reasons.length > 0 ? <p className="mt-3 text-xs leading-5 text-slate-400">{reasons.join(" · ").replaceAll("_", " ")}</p> : null}
@@ -282,7 +323,50 @@ function symbols(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function CandidateTable({ candidates, nowSeconds }: Readonly<{ candidates: Record<string, Candidate>; nowSeconds?: number }>) {
+/** Compact anti-chase badge for table rows */
+function AntiChaseBadge({ decision }: Readonly<{ decision: Rec }>) {
+  const ac = record(decision.anti_chase_current);
+  if (ac.available !== true) return <span className="text-slate-600">—</span>;
+  const blocked = ac.currently_blocked === true;
+  const ext = finite(ac.extension_atr);
+  const threshold = finite(ac.threshold_atr) ?? 1.2;
+  const ratio = ext !== undefined && threshold > 0 ? ext / threshold : 0;
+  const tone = blocked
+    ? "text-rose-300"
+    : ratio > 0.5 ? "text-amber-300" : "text-emerald-300";
+  return (
+    <span className={`font-mono text-xs ${tone}`} title={`extension ${ext === undefined ? "—" : ext.toFixed(2)} ATR / threshold ${threshold} ATR${typeof ac.source === "string" ? ` · ${ac.source}` : ""}`}>
+      {ext === undefined ? "—" : ext.toFixed(2)}{blocked ? " 🔴" : ""}
+    </span>
+  );
+}
+
+/** Decision before anti-chase — shows the "real" current decision */
+function OriginBadge({ decision }: Readonly<{ decision: Rec }>) {
+  const origin = typeof decision.decision_before_anti_chase === "string"
+    ? decision.decision_before_anti_chase
+    : undefined;
+  const currentBlocks = Array.isArray(decision.current_block_reasons)
+    ? decision.current_block_reasons.filter((v): v is string => typeof v === "string")
+    : [];
+  if (!origin && currentBlocks.length === 0) return <span className="text-slate-600">—</span>;
+  return (
+    <div className="flex flex-col gap-0.5">
+      {origin ? (
+        <span className="font-mono text-xs text-slate-400" title="Decision before anti-chase was applied">
+          {origin.replaceAll("_", " ")}
+        </span>
+      ) : null}
+      {currentBlocks.length > 0 ? (
+        <span className="text-xs text-rose-300" title="Current active blockers">
+          {currentBlocks.length} blocked
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+export function CandidateTable({ candidates, nowSeconds }: Readonly<{ candidates: Record<string, Candidate>; nowSeconds?: number }>) {
   const [query, setQuery] = useState("");
   const [decisionFilter, setDecisionFilter] = useState("ALL");
   const [page, setPage] = useState(0);
@@ -304,61 +388,144 @@ function CandidateTable({ candidates, nowSeconds }: Readonly<{ candidates: Recor
     setPage((current) => Math.min(current, pages - 1));
   }, [pages]);
   const visible = rows.slice(safePage * pageSize, safePage * pageSize + pageSize);
+
+  // Compute summary counts for the compact bar
+  const summary = useMemo(() => {
+    const counts: Record<string, number> = {};
+    let antiChaseBlocked = 0;
+    let antiChaseClear = 0;
+    for (const [, candidate] of Object.entries(candidates)) {
+      const decision = record(record(candidate.metrics).entry_decision);
+      const dec = String(decision.decision ?? "UNKNOWN");
+      counts[dec] = (counts[dec] ?? 0) + 1;
+      const ac = record(decision.anti_chase_current);
+      if (ac.available === true) {
+        if (ac.currently_blocked === true) antiChaseBlocked++;
+        else antiChaseClear++;
+      }
+    }
+    return { counts, antiChaseBlocked, antiChaseClear, total: Object.keys(candidates).length };
+  }, [candidates]);
+
   return (
-    <section id="all-candidates" className="panel mt-6 overflow-hidden">
-      <div className="flex flex-wrap items-center gap-3 border-b border-slate-800 p-4">
-        <div className="relative min-w-[220px] flex-1"><Search size={15} className="absolute left-3 top-2.5 text-slate-500" /><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="Search symbol" className="w-full rounded-lg border border-slate-700 bg-slate-950 py-2 pl-9 pr-3 text-sm outline-none focus:border-sky-500" /></div>
-        <select value={decisionFilter} onChange={(event) => { setDecisionFilter(event.target.value); setPage(0); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm">
-          {["ALL", "ENTRY_READY", "FORMING", "ACTIVE", "LATE", "INVALIDATED", "EXPIRED", "NO_TRADE", "UNAVAILABLE"].map((value) => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}
-        </select>
-        <span className="text-xs text-slate-500">{rows.length} candidates</span>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[820px] text-left text-sm">
-          <thead className="bg-slate-950/70 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Symbol</th><th>Decision</th><th>Readiness</th><th>Price</th><th>OI 1h</th><th>Taker B/S</th><th>Cascade</th><th>Freshness</th></tr></thead>
-          <tbody className="divide-y divide-slate-800">
-            {visible.map(({ symbol, candidate, decision, readiness }) => {
-              const { evidence } = evidencePacket(candidate);
-              const derivatives = record(evidence.derivatives);
-              const flow = record(evidence.order_flow);
-              const cascade = record(evidence.cascade);
-              const freshness = candidateFreshness(candidate, nowSeconds);
-              let freshnessText = "—";
-              if (freshness.ageSeconds !== undefined) {
-                freshnessText = `${number(freshness.ageSeconds, 0)}s`;
-                if (freshness.state === "stale") freshnessText += " · stale";
-              }
-              const cascadeStatus = typeof cascade.status === "string" ? cascade.status : "—";
-              const cascadePoints = finite(cascade.readiness_points);
-              const cascadeMaximum = finite(cascade.maximum_available);
-              const cascadeText = cascadePoints !== undefined && cascadeMaximum !== undefined
-                ? `${cascadeStatus} · ${cascadePoints.toFixed(1)}/${cascadeMaximum.toFixed(0)}`
-                : cascadeStatus;
-              const evidenceUnavailable = candidate.analysis_status === "unavailable" || candidate.data_status === "unavailable";
-              const readinessText = !evidenceUnavailable && readiness >= 0 ? readiness.toFixed(1) : "—";
-              return <tr key={symbol} className="hover:bg-slate-900/60"><td className="px-4 py-3 font-mono text-sky-200">{symbol}</td><td><span className={`status-pill border ${decisionTone(decision)}`}>{decision.replaceAll("_", " ")}</span></td><td className={`font-mono ${evidenceUnavailable ? "text-slate-500" : ""}`} title={evidenceUnavailable ? "Required market evidence unavailable" : undefined}>{readinessText}</td><td className="font-mono">${price(candidate.last_price)}</td><td>{pct(derivatives.oi_change_1h_pct, 2)}</td><td>{number(flow.taker_buy_sell_ratio, 3)}</td><td>{cascadeText}</td><td className={freshness.state === "stale" ? "font-medium text-rose-300" : "text-slate-300"} title={freshness.thresholdSeconds === undefined ? undefined : `Policy freshness limit ${number(freshness.thresholdSeconds, 0)}s`}>{freshnessText}</td></tr>;
+    <section id="all-candidates" className="mx-auto mb-8 max-w-7xl scroll-mt-28">
+      {/* Title bar */}
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-sky-300">All candidates</p>
+          <h2 className="mt-1 text-2xl font-semibold">{summary.total} tracked symbols</h2>
+        </div>
+        {/* Compact decision summary */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {Object.entries(summary.counts)
+            .sort(([a], [b]) => {
+              const order = ["ENTRY_READY", "FORMING", "ACTIVE", "LATE", "NO_TRADE", "INVALIDATED", "EXPIRED", "UNAVAILABLE", "UNKNOWN"];
+              return order.indexOf(a) - order.indexOf(b);
+            })
+            .map(([dec, count]) => {
+              const tone = dec === "ENTRY_READY" ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200"
+                : dec === "FORMING" ? "border-amber-400/30 bg-amber-500/10 text-amber-200"
+                : dec === "ACTIVE" ? "border-sky-400/30 bg-sky-500/10 text-sky-200"
+                : dec === "LATE" ? "border-orange-400/30 bg-orange-500/10 text-orange-200"
+                : "border-slate-700 bg-slate-900 text-slate-400";
+              return (
+                <span key={dec} className={`status-pill border ${tone}`} title={`${dec.replaceAll("_", " ")}: ${count}`}>
+                  {dec.replaceAll("_", " ")} {count}
+                </span>
+              );
             })}
-          </tbody>
-        </table>
+        </div>
       </div>
-      <div className="flex items-center justify-between gap-3 border-t border-slate-800 px-4 py-3 text-xs text-slate-400">
-        <button
-          type="button"
-          disabled={safePage <= 0}
-          onClick={() => setPage((value) => Math.max(0, value - 1))}
-          className="rounded-md border border-slate-700 px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          Previous
-        </button>
-        <span>Page {safePage + 1} / {pages}</span>
-        <button
-          type="button"
-          disabled={safePage >= pages - 1}
-          onClick={() => setPage((value) => Math.min(pages - 1, value + 1))}
-          className="rounded-md border border-slate-700 px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          Next
-        </button>
+
+      {/* Anti-chase summary strip */}
+      <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-2.5">
+        <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Anti-Chase</span>
+        <span className="status-pill border border-emerald-400/25 bg-emerald-500/10 text-emerald-200">{summary.antiChaseClear} clear</span>
+        <span className="status-pill border border-rose-400/25 bg-rose-500/10 text-rose-200">{summary.antiChaseBlocked} blocked</span>
+        <span className="ml-auto text-xs text-slate-500">Sign-aware causal measurement · extension_atr &lt; 0 required for block</span>
+      </div>
+
+      <div className="panel overflow-hidden">
+        <div className="flex flex-wrap items-center gap-3 border-b border-slate-800 p-4">
+          <div className="relative min-w-[220px] flex-1"><Search size={15} className="absolute left-3 top-2.5 text-slate-500" /><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="Search symbol" className="w-full rounded-lg border border-slate-700 bg-slate-950 py-2 pl-9 pr-3 text-sm outline-none focus:border-sky-500" /></div>
+          <select value={decisionFilter} onChange={(event) => { setDecisionFilter(event.target.value); setPage(0); }} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm">
+            {["ALL", "ENTRY_READY", "FORMING", "ACTIVE", "LATE", "INVALIDATED", "EXPIRED", "NO_TRADE", "UNAVAILABLE"].map((value) => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}
+          </select>
+          <span className="text-xs text-slate-500">{rows.length} candidates</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1080px] text-left text-sm">
+            <thead className="bg-slate-950/70 text-xs uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-4 py-3">Symbol</th>
+                <th>Decision</th>
+                <th>Readiness</th>
+                <th>Price</th>
+                <th>Anti-Chase</th>
+                <th>Origin</th>
+                <th>OI 1h</th>
+                <th>Taker B/S</th>
+                <th>Cascade</th>
+                <th>Freshness</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800">
+              {visible.map(({ symbol, candidate, decision, readiness }) => {
+                const { evidence, decision: decPacket } = evidencePacket(candidate);
+                const derivatives = record(evidence.derivatives);
+                const flow = record(evidence.order_flow);
+                const cascade = record(evidence.cascade);
+                const freshness = candidateFreshness(candidate, nowSeconds);
+                let freshnessText = "—";
+                if (freshness.ageSeconds !== undefined) {
+                  freshnessText = `${number(freshness.ageSeconds, 0)}s`;
+                  if (freshness.state === "stale") freshnessText += " · stale";
+                }
+                const cascadeStatus = typeof cascade.status === "string" ? cascade.status : "—";
+                const cascadePoints = finite(cascade.readiness_points);
+                const cascadeMaximum = finite(cascade.maximum_available);
+                const cascadeText = cascadePoints !== undefined && cascadeMaximum !== undefined
+                  ? `${cascadeStatus} · ${cascadePoints.toFixed(1)}/${cascadeMaximum.toFixed(0)}`
+                  : cascadeStatus;
+                const evidenceUnavailable = candidate.analysis_status === "unavailable" || candidate.data_status === "unavailable";
+                const readinessText = !evidenceUnavailable && readiness >= 0 ? readiness.toFixed(1) : "—";
+                return (
+                  <tr key={symbol} className="hover:bg-slate-900/60">
+                    <td className="px-4 py-3 font-mono text-sky-200">{symbol}</td>
+                    <td><span className={`status-pill border ${decisionTone(decision)}`}>{decision.replaceAll("_", " ")}</span></td>
+                    <td className={`font-mono ${evidenceUnavailable ? "text-slate-500" : ""}`} title={evidenceUnavailable ? "Required market evidence unavailable" : undefined}>{readinessText}</td>
+                    <td className="font-mono">${price(candidate.last_price)}</td>
+                    <td><AntiChaseBadge decision={decPacket} /></td>
+                    <td><OriginBadge decision={decPacket} /></td>
+                    <td>{pct(derivatives.oi_change_1h_pct, 2)}</td>
+                    <td>{number(flow.taker_buy_sell_ratio, 3)}</td>
+                    <td>{cascadeText}</td>
+                    <td className={freshness.state === "stale" ? "font-medium text-rose-300" : "text-slate-300"} title={freshness.thresholdSeconds === undefined ? undefined : `Policy freshness limit ${number(freshness.thresholdSeconds, 0)}s`}>{freshnessText}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex items-center justify-between gap-3 border-t border-slate-800 px-4 py-3 text-xs text-slate-400">
+          <button
+            type="button"
+            disabled={safePage <= 0}
+            onClick={() => setPage((value) => Math.max(0, value - 1))}
+            className="rounded-md border border-slate-700 px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <span>Page {safePage + 1} / {pages}</span>
+          <button
+            type="button"
+            disabled={safePage >= pages - 1}
+            onClick={() => setPage((value) => Math.min(pages - 1, value + 1))}
+            className="rounded-md border border-slate-700 px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -476,7 +643,6 @@ export function DecisionTerminal({ terminal, candidates, nowSeconds }: Readonly<
         candidates={candidates}
       />
       <RecentDecisionChanges value={packet.recent_changes} />
-      <CandidateTable candidates={candidates} nowSeconds={nowSeconds} />
     </section>
   );
 }

@@ -172,10 +172,13 @@ def build_cascade_evidence(
     readiness_pct = (total_points / maximum_available * 100.0) if maximum_available else None
     if maximum_available == 0:
         status = "UNAVAILABLE"
-    elif maximum_available < 10.0:
-        status = "PARTIAL"
-    else:
+    elif maximum_available >= 6.0:
+        # Calibrated: at least 3 of 4 components available is sufficient for PASS/FAIL
+        # evaluation. Liquidation flow is frequently unavailable (needs real-time WS)
+        # and should not permanently block cascade as PARTIAL.
         status = "PASS" if readiness_pct is not None and readiness_pct >= 65.0 else "FAIL"
+    else:
+        status = "PARTIAL"
     return {
         "contract_version": "cascade_intelligence_v1",
         "status": status,

@@ -331,7 +331,7 @@ class MultiExchangeValidator:
         microstructure: dict[str, Any],
         market_info: dict[str, Any],
     ) -> str:
-        if status not in {"PRE-TRIGGER", "ARMED", "TRIGGERED"}:
+        if status not in {"FUEL-RICH", "PRE-TRIGGER", "ARMED", "TRIGGERED"}:
             return status
         setup, capture, reference = self._position_setup_from_candle_capture(
             candle_results=candle_results,
