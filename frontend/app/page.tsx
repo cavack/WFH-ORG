@@ -261,8 +261,7 @@ function BacktesterResults() {
   useEffect(() => {
     const load = async () => {
       try {
-        const backendUrl = "http://172.19.0.2:8000";
-        const r = await fetch(`${backendUrl}/api/backtest/results`);
+        const r = await fetch(`/api/backtest/results`);
         if (r.ok) setData(await r.json());
       } catch { /* ignore */ }
     };
@@ -278,7 +277,7 @@ function BacktesterResults() {
   return (
     <section>
       <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-        <DollarSign size={13} className="mr-1.5 inline text-amber-400" /> Backtester · $200 Capital
+        <DollarSign size={13} className="mr-1.5 inline text-amber-400" /> Backtester · $100 Capital · 4-14x Leverage
       </h2>
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
         <div className="rounded-lg border border-slate-800/60 bg-slate-900/50 p-2.5">

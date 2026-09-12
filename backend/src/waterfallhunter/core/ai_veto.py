@@ -94,6 +94,48 @@ class AIVetoEngine:
         )
 
     async def _request_canonical_advisory(self, prompt: str) -> Dict[str, Any]:
+        # Try Ollama FIRST (local, fast, no rate limits)
+        _ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        _ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as _oc:
+                _ollama_prompt = prompt + "\n\nRespond ONLY with valid JSON: {\"advice\": \"LONG\"|\"SHORT\"|\"WAIT\", \"confidence\": 0-100, \"reasoning\": \"...\"}"
+                _resp = await _oc.post(
+                    f"{_ollama_url}/api/generate",
+                    json={"model": _ollama_model, "prompt": _ollama_prompt, "stream": False},
+                    timeout=120.0,
+                )
+                if _resp.status_code == 200:
+                    _data = _resp.json()
+                    _text = _data.get("response", "")
+                    # Extract JSON from response
+                    import re as _re
+                    _json_match = _re.search(r'\{[^}]+\}', _text, _re.DOTALL)
+                    if _json_match:
+                        try:
+                            _parsed = json.loads(_json_match.group())
+                            _advice = str(_parsed.get("advice", "UNKNOWN")).upper()
+                            if _advice in ("LONG", "SHORT", "WAIT", "AVOID"):
+                                return {
+                                    "advice": _advice,
+                                    "confidence": int(_parsed.get("confidence", 50)),
+                                    "reasoning": str(_parsed.get("reasoning", "Ollama analysis")),
+                                    "provider": "ollama",
+                                }
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                    # If JSON parsing failed, use heuristic from text
+                    _text_lower = _text.lower()
+                    if "long" in _text_lower:
+                        return {"advice": "LONG", "confidence": 55, "reasoning": _text[:200], "provider": "ollama"}
+                    elif "short" in _text_lower:
+                        return {"advice": "SHORT", "confidence": 55, "reasoning": _text[:200], "provider": "ollama"}
+                    elif "wait" in _text_lower:
+                        return {"advice": "WAIT", "confidence": 50, "reasoning": _text[:200], "provider": "ollama"}
+        except Exception:
+            pass  # Fall through to Gemini
+
+        # Fall back to Gemini
         if not self.api_key:
             return self._unavailable_advisory("Missing Gemini API key.")
         url = (
@@ -105,21 +147,24 @@ class AIVetoEngine:
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.1, "response_mime_type": "application/json"},
         }
-        async with httpx.AsyncClient(timeout=12.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-        if response.status_code != 200:
-            return self._unavailable_advisory(f"Gemini API HTTP error {response.status_code}.")
-        data = response.json()
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
-        text = re.sub(r"^```json", "", text).strip()
-        text = re.sub(r"```$", "", text).strip()
-        parsed = json.loads(text)
-        return {
-            "advice": str(parsed.get("advice", "UNKNOWN")),
-            "confidence": int(parsed.get("confidence", 0)),
-            "reasoning": str(parsed.get("reasoning", "No reasoning provided.")),
-            "provider": "gemini",
-        }
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, json=payload, headers=headers)
+            if response.status_code != 200:
+                return self._unavailable_advisory(f"Gemini API HTTP error {response.status_code}.")
+            data = response.json()
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            text = re.sub(r"^```json", "", text).strip()
+            text = re.sub(r"```$", "", text).strip()
+            parsed = json.loads(text)
+            return {
+                "advice": str(parsed.get("advice", "UNKNOWN")),
+                "confidence": int(parsed.get("confidence", 0)),
+                "reasoning": str(parsed.get("reasoning", "No reasoning provided.")),
+                "provider": "gemini",
+            }
+        except Exception as exc:
+            return self._unavailable_advisory(f"AI providers unavailable ({type(exc).__name__}).")
 
     async def advisory_for_decision(
         self, symbol: str, metrics: Dict[str, Any], decision: Dict[str, Any]
