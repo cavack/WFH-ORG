@@ -604,6 +604,7 @@ def _base_decision(
     block_reasons: list[str],
     anti_chase_late: bool,
     status: str,
+    cascade_status: str = "FAIL",
     readiness: float,
     coverage_pct: float,
     direction_ok: bool,
@@ -619,13 +620,20 @@ def _base_decision(
         if "STRUCTURE_INVALIDATED" in block_reasons:
             return "INVALIDATED"
         return "NO_TRADE"
+    # MANDATORY: cascade must PASS for any signal
+    # If cascade is FAIL, force NO_TRADE regardless of readiness
+    cascade_ok = cascade_status == "PASS"
+    
     gates_pass = (
         readiness >= policy.entry_ready_minimum
         and coverage_pct >= 55.0
         and direction_ok and execution_ok and trade_plan_ok
+        and cascade_ok  # cascade PASS mandatory
     )
     if gates_pass:
         decision = "ACTIVE" if status == "TRIGGERED" else "ENTRY_READY"
+    elif not cascade_ok:
+        decision = "NO_TRADE"  # cascade FAIL = no trade
     else:
         decision = "FORMING" if readiness >= policy.forming_minimum else "NO_TRADE"
     # Anti-chase is now a scoring penalty, not a hard block.
@@ -822,7 +830,8 @@ def build_entry_decision(
 
     decision = _base_decision(
         block_reasons=block_reasons, anti_chase_late=anti_chase_late,
-        status=status, readiness=readiness,
+        status=status,
+    cascade_status=str((metrics.get("evidence_summary") or {}).get("cascade", {}).get("status", "FAIL")), readiness=readiness,
         coverage_pct=coverage_pct, direction_ok=direction_ok, timing_ok=timing >= 5.0,
         execution_ok=execution_ok, cross_ok=cross_ok, trade_plan_ok=trade_plan_ok, policy=policy,
     )

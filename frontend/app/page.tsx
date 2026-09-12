@@ -441,7 +441,10 @@ export default function Dashboard() {
       rows.filter(([, c]) => {
         const d = getDecision(c);
         const r = getReadiness(c);
-        return (d === "ENTRY_READY" || d === "ACTIVE") || (d === "FORMING" && r >= 45);
+        const es = getED(c)?.evidence_summary as Record<string, unknown> | undefined;
+        const casc = es?.cascade as Record<string, unknown> | undefined;
+        const cascStatus = (casc?.status as string) ?? "FAIL";
+        return (d === "ENTRY_READY" || d === "ACTIVE") || (d === "FORMING" && r >= 45 && cascStatus === "PASS");
       }),
     [rows],
   );

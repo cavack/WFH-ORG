@@ -142,7 +142,7 @@ class AIVetoEngine:
             "ai_reasoning": opinion.get("reasoning", "No advisory available"),
             "ai_provider": opinion.get("provider", "none"),
             "ai_model": self.model if opinion.get("provider") == "gemini" else "none",
-            "ai_status": "AVAILABLE" if opinion.get("provider") == "gemini" else "UNAVAILABLE",
+            "ai_status": "AVAILABLE" if opinion.get("provider") in ("gemini", "ollama") else "UNAVAILABLE",
         }
 
     async def _get_gemini_opinion(
@@ -238,7 +238,7 @@ class AIVetoEngine:
                     f"Ticker: {str(ticker)[:150]}. "
                     "Respond JSON: {advice: LONG/SHORT/WAIT, confidence: 0-100, reasoning: one sentence}"
                 )
-                async with _httpx.AsyncClient(timeout=15.0) as _oc:
+                async with _httpx.AsyncClient(timeout=120.0) as _oc:
                     _resp = await _oc.post(
                         f"{_ollama_url}/api/generate",
                         json={"model": _ollama_model, "prompt": _prompt, "stream": False},
@@ -309,8 +309,8 @@ class AIVetoEngine:
                 "persistence and is not decision-critical."
             )
         else:
-            ai_advice = "UNAVAILABLE"
-            ai_reasoning = "Missing Gemini API key."
+            ai_advice = "PENDING"
+            ai_reasoning = "AI advisory pending - will use Ollama fallback."
 
         return deterministic_veto, {
             "deterministic_veto": deterministic_veto,
