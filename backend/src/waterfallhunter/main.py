@@ -4382,9 +4382,10 @@ async def startup_event():
         sse_broadcaster()
     )
 
-    _start_background_task(
-        notifier.start_interactive_bot()
-    )
+    # Legacy bot disabled to avoid HTTP 409 conflict with enhanced bot
+    # _start_background_task(
+    #     notifier.start_interactive_bot()
+    # )
 
     # Enhanced Telegram bot with /signals, /health, /top, /help and 12h health reports
     try:
@@ -4936,3 +4937,55 @@ async def get_raw_candidates(response: Response):
         raw_payload,
         generated_at=generated_at,
     )
+
+
+# ─── New API Routes ───
+
+@app.get("/api/backtest/results")
+async def backtest_results():
+    """Backtester results endpoint."""
+    try:
+        from waterfallhunter.core.backtester import Backtester
+        bt = Backtester(db_path=settings.backtester_db_path)
+        metrics = bt.compute_metrics()
+        equity = bt.get_equity_curve()
+        trades = bt.get_trade_history(limit=20)
+        mistakes = bt.get_top_mistakes(limit=10)
+        return {
+            "stats": {
+                "current_capital": bt.current_capital(),
+                "total_trades": bt.total_trades(),
+                "wins": bt.wins(),
+                "losses": bt.losses(),
+                "win_rate": metrics.get("win_rate", 0),
+                "max_drawdown_pct": metrics.get("max_drawdown_pct", 0),
+                "profit_factor": metrics.get("profit_factor", 0),
+                "sharpe_ratio": metrics.get("sharpe_ratio", 0),
+                "expectancy": metrics.get("expectancy", 0),
+            },
+            "equity": equity,
+            "trades": trades,
+            "mistakes": mistakes,
+        }
+    except Exception as exc:
+        return {"error": str(exc), "stats": {}, "equity": [], "trades": [], "mistakes": []}
+
+
+@app.get("/api/fundamental")
+async def fundamental_score_endpoint(symbol: str = ""):
+    """Fundamental score endpoint."""
+    try:
+        result = await fundamental_scorer.score(symbol)
+        return result
+    except Exception as exc:
+        return {"error": str(exc), "fundamental_score": 0, "confidence": 0}
+
+
+@app.get("/api/ai-advisory")
+async def ai_advisory_endpoint(symbol: str = ""):
+    """AI advisory endpoint for a specific symbol."""
+    try:
+        result = await ai_advisor.analyze({"symbol": symbol})
+        return result
+    except Exception as exc:
+        return {"error": str(exc), "symbol": symbol, "overall": "UNAVAILABLE"}

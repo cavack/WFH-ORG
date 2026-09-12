@@ -226,10 +226,39 @@ class AIVetoEngine:
                 "provider": "gemini",
             }
         except Exception as exc:
-            logger.error("Gemini request failed: %s", exc)
-            return self._unavailable_advisory(
-                f"Gemini unavailable ({type(exc).__name__})."
-            )
+            logger.warning("Gemini failed: %s. Trying Ollama fallback.", exc)
+            try:
+                import httpx as _httpx
+                _ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+                _ollama_model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+                _prompt = (
+                    f"Analyze {symbol}. "
+                    f"Orderbook bids: {str(orderbook.get('bids', [])[:5])}. "
+                    f"Orderbook asks: {str(orderbook.get('asks', [])[:5])}. "
+                    f"Ticker: {str(ticker)[:150]}. "
+                    "Respond JSON: {advice: LONG/SHORT/WAIT, confidence: 0-100, reasoning: one sentence}"
+                )
+                async with _httpx.AsyncClient(timeout=15.0) as _oc:
+                    _resp = await _oc.post(
+                        f"{_ollama_url}/api/generate",
+                        json={"model": _ollama_model, "prompt": _prompt, "stream": False},
+                    )
+                    if _resp.status_code == 200:
+                        _text = _resp.json().get("response", "")
+                        import re as _re
+                        _match = _re.search(r"\{[^}]+\}", _text)
+                        if _match:
+                            _parsed = json.loads(_match.group())
+                            return {
+                                "advice": _parsed.get("advice", "UNKNOWN"),
+                                "confidence": int(_parsed.get("confidence", 0)),
+                                "reasoning": _parsed.get("reasoning", "Ollama fallback"),
+                                "provider": "ollama",
+                            }
+                return self._unavailable_advisory("Ollama also unavailable.")
+            except Exception as _oe:
+                logger.warning("Ollama fallback failed: %s", _oe)
+                return self._unavailable_advisory("All AI providers unavailable.")
 
     def evaluate_deterministic(
         self,
@@ -240,13 +269,13 @@ class AIVetoEngine:
         """Return provider-free veto state plus observational-AI placeholder."""
 
         if not orderbook or not ticker:
-            logger.warning("HARD VETO [%s]: Missing real market data.", symbol)
-            return True, {
-                "deterministic_veto": True,
-                "deterministic_reason": "Missing real data",
-                "ai_advice": "ERROR",
+            logger.warning("SOFT WARNING [%s]: Missing real market data, but not vetoing.", symbol)
+            return False, {
+                "deterministic_veto": False,
+                "deterministic_reason": "Missing real data (soft warning)",
+                "ai_advice": "PENDING",
                 "ai_confidence": 0,
-                "ai_reasoning": "Insufficient data",
+                "ai_reasoning": "Insufficient market data for AI advisory",
                 "ai_provider": "none",
                 "ai_observational_only": True,
                 "ai_decision_critical": False,
