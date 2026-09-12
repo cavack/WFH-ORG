@@ -44,6 +44,9 @@ from waterfallhunter.core.ai_veto import (
     AIVetoEngine,
     CANONICAL_ADVISORY_DELIVERY_GRACE_SECONDS,
 )
+from waterfallhunter.core.fundamental_scorer import FundamentalScorer
+from waterfallhunter.core.ai_signal_advisor import AISignalAdvisor
+from waterfallhunter.core.backtester import Backtester
 from waterfallhunter.core.risk_manager import build_signal_leverage_advisory
 from waterfallhunter.core.dashboard import compact_metrics
 from waterfallhunter.core.decision_terminal import build_decision_terminal
@@ -307,6 +310,16 @@ notifier = TelegramNotifier(
 )
 
 ai_veto = AIVetoEngine()
+fundamental_scorer = FundamentalScorer(api_keys={
+    "lunarcrush": settings.lunarcrush_api_key,
+    "twitter": settings.twitter_bearer_token,
+})
+ai_advisor = AISignalAdvisor(
+    gemini_key=settings.gemini_api_key,
+    ollama_url=settings.ollama_base_url,
+    ollama_model=settings.ollama_model,
+)
+backtester = Backtester(db_path=settings.backtester_db_path)
 
 _hunter_running = False
 _hunter_last_completed_at: float | None = None
@@ -4372,6 +4385,18 @@ async def startup_event():
     _start_background_task(
         notifier.start_interactive_bot()
     )
+
+    # Enhanced Telegram bot with /signals, /health, /top, /help and 12h health reports
+    try:
+        from waterfallhunter.core.telegram_enhanced import start_enhanced_bot
+        _start_background_task(start_enhanced_bot(
+            db_adapter=db,
+            scanner=scanner,
+            delegate=notifier,
+        ))
+        logger.info("Enhanced Telegram bot started with health reports and new commands.")
+    except Exception as exc:
+        logger.warning("Enhanced Telegram bot failed to start: %s", exc)
 
     _entry_notification_worker = _build_entry_notification_worker()
     if _entry_notification_worker is not None:
