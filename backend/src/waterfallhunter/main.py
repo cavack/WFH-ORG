@@ -143,9 +143,17 @@ async def app_lifespan(_: FastAPI):
 
 
 def _signal_alert_allowed(metrics: dict) -> bool:
-    return str(metrics.get("strategy_profile") or "") != (
-        MultiExchangeValidator.experimental_profile
-    )
+    """Allow Telegram alerts when cascade PASS and readiness >= 55."""
+    cascade_status = str((metrics.get("cascade_intelligence") or {}).get("status", "FAIL"))
+    readiness = float(metrics.get("readiness_score", 0))
+    structure = str(metrics.get("structure_status", ""))
+    if cascade_status != "PASS":
+        return False
+    if readiness < 55:
+        return False
+    if structure == "STRUCTURE_INVALIDATED":
+        return False
+    return True
 
 app = FastAPI(
     title="WaterfallHunter API - Production",
@@ -315,7 +323,7 @@ fundamental_scorer = FundamentalScorer(api_keys={
     "twitter": settings.twitter_bearer_token,
 })
 ai_advisor = AISignalAdvisor(
-    gemini_key=settings.gemini_api_key,
+    # Gemini removed
     ollama_url=settings.ollama_base_url,
     ollama_model=settings.ollama_model,
 )
@@ -1998,7 +2006,7 @@ async def _refresh_ai_advisory_observational(
         != analysis_observed_at
     ):
         logger.info(
-            "Discarding stale Gemini advisory for %s",
+            "Discarding stale AI advisory for %s",
             symbol,
         )
         return
@@ -3872,7 +3880,7 @@ async def evaluate_candidate(
     if new_state == "TRIGGERED":
         # Deterministic market-data veto is part of the canonical hard-gate
         # path and was already evaluated before the entry decision event was
-        # persisted. Gemini output remains advisory-only and cannot mutate it.
+        # persisted. AI output remains advisory-only and cannot mutate it.
         if deterministic_vetoed:
             state_persisted = db.update_candidate_state(
                 symbol,

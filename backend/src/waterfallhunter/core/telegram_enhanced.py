@@ -116,8 +116,6 @@ class _FallbackSettings:
 
     telegram_token: str | None = os.getenv("TELEGRAM_TOKEN")
     telegram_chat_id: str | None = os.getenv("TELEGRAM_CHAT_ID")
-    gemini_api_key: str | None = os.getenv("GEMINI_API_KEY")
-    gemini_model: str | None = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
     ollama_host: str | None = os.getenv("OLLAMA_HOST")
     db_path: str | None = os.getenv(
         "WFH_DB_PATH", "/srv/waterfallhunter/data/waterfallhunter.db"
@@ -456,16 +454,14 @@ def _memory_usage_percent() -> float | None:
 
 
 def _ai_status(settings: Any) -> str:
-    """Report Gemini + Ollama availability based on configured keys/hosts."""
+    """Report Ollama availability."""
 
-    gemini_on = bool(getattr(settings, "gemini_api_key", None))
-    gemini_model = getattr(settings, "gemini_model", None) or "gemini"
+    # Gemini removed
     ollama_host = getattr(settings, "ollama_host", None) or os.getenv("OLLAMA_HOST")
     ollama_on = bool(ollama_host)
 
-    gemini_str = f"Gemini/{gemini_model}: {'active' if gemini_on else 'down'}"
     ollama_str = f"Ollama: {'active' if ollama_on else 'down'}"
-    return f"{gemini_str} | {ollama_str}"
+    return ollama_str
 
 
 def _exchange_sources_online() -> tuple[int, int]:

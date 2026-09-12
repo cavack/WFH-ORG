@@ -108,7 +108,7 @@ function SignalCard({ symbol, candidate }: Readonly<{ symbol: string; candidate:
         </div>
         <div className={`rounded-lg px-2.5 py-1 text-center ${decColor} bg-slate-900/50`}>
           <span className="font-mono text-lg font-bold">{readiness.toFixed(0)}</span>
-          <span className="text-[9px] text-slate-500 block leading-none">READY</span>
+          <span className={`text-[9px] block leading-none ${readiness >= 70 ? "text-emerald-400" : "text-sky-400"}`}>{readiness >= 70 ? "READY" : "FORMING"}</span>
         </div>
       </div>
 

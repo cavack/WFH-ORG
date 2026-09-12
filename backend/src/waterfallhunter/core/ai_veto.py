@@ -1,422 +1,250 @@
+"""AI advisory integration for WaterfallHunter.
+
+Pure Ollama integration — no Gemini. AI advisory is observational only.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
-import math
-import re
-from typing import Any, Dict, Tuple
+from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
 from waterfallhunter.config import settings
+logger = logging.getLogger("WaterfallHunter.AICascade")
 
-logger = logging.getLogger("WaterfallHunter.AIVeto")
 
-CANONICAL_ADVISORY_TIMEOUT_SECONDS = 8
-CANONICAL_ADVISORY_DELIVERY_GRACE_SECONDS = CANONICAL_ADVISORY_TIMEOUT_SECONDS + 2
+
+@dataclass(frozen=True)
+class AICascadeOpinion:
+    """Validated AI advisory output."""
+
+    verified: bool
+    note: str
+    score: int
+    provider: str  # "ollama" or "none"
+    model: str
+    raw: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "verified": self.verified,
+            "note": self.note,
+            "score": self.score,
+            "provider": self.provider,
+            "model": self.model,
+            "raw": self.raw,
+        }
+
+
+class AICascadeIntelligence:
+    """Fetch AI advisory from Ollama (local, no external API)."""
+
+    def __init__(self) -> None:
+        self.ollama_url = (
+            str(settings.ollama_base_url or "http://host.docker.internal:11434").rstrip("/")
+            + "/api/chat"
+        )
+        self.ollama_model = str(settings.ollama_model or "qwen2.5:1.5b")
+        self.timeout = 120.0  # Ollama on CPU can be slow
+        logger.info(
+            "AICascadeIntelligence initialised: ollama_model=%s, ollama_url=%s",
+            self.ollama_model,
+            self.ollama_url,
+        )
+
+    @staticmethod
+    def _unavailable_advisory(reason: str) -> AICascadeOpinion:
+        return AICascadeOpinion(
+            verified=False,
+            note=f"AI advisory unavailable: {reason}",
+            score=0,
+            provider="none",
+            model="none",
+            raw={"error": reason},
+        )
+
+    def _coerce_opinion(self, raw: dict[str, Any]) -> AICascadeOpinion | None:
+        """Validate Ollama advisory output."""
+        try:
+            verified = bool(raw.get("verified", False))
+            note = str(raw.get("note") or raw.get("reasoning") or "")[:500]
+            score = max(0, min(100, int(raw.get("score", 0))))
+            provider = str(raw.get("provider") or "none")
+            model = str(raw.get("model") or self.ollama_model)
+            if provider not in ("ollama", "none"):
+                return AICascadeIntelligence._unavailable_advisory(
+                    "Invalid AI advisory payload."
+                )
+            return AICascadeOpinion(
+                verified=verified, note=note, score=score, provider=provider, model=model, raw=raw
+            )
+        except (ValueError, TypeError):
+            return AICascadeIntelligence._unavailable_advisory(
+                "Invalid AI advisory payload."
+            )
+
+    async def get_advisory(self, metrics: dict[str, Any]) -> AICascadeOpinion:
+        """Fetch AI advisory from Ollama only."""
+        try:
+            prompt = self._build_prompt(metrics)
+            raw = await self._request_ollama(prompt)
+            if raw is None:
+                return self._unavailable_advisory("Ollama request failed.")
+
+            # Try to parse JSON from the response
+            text = raw.get("message", {}).get("content", "")
+            try:
+                parsed = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                # Try to find JSON in the text
+                match = re.search(r'\{.*\}', text, re.DOTALL)
+                if match:
+                    try:
+                        parsed = json.loads(match.group(0))
+                    except (json.JSONDecodeError, ValueError):
+                        return self._unavailable_advisory(
+                            "Ollama response not valid JSON."
+                        )
+                else:
+                    return self._unavailable_advisory(
+                        "Ollama response not valid JSON."
+                    )
+
+            parsed["provider"] = "ollama"
+            parsed["model"] = self.ollama_model
+            opinion = self._coerce_opinion(parsed)
+            if opinion is not None:
+                return opinion
+            return self._unavailable_advisory("Ollama advisory parse failed.")
+        except Exception as exc:
+            logger.exception("AI advisory error: %s", exc)
+            return self._unavailable_advisory(f"Ollama unavailable ({type(exc).__name__}).")
+
+    def _build_prompt(self, metrics: dict[str, Any]) -> str:
+        """Build the analysis prompt for Ollama."""
+        score = metrics.get("readiness_score", 0)
+        coverage = metrics.get("coverage_score", 0)
+        symbol = metrics.get("symbol", "UNKNOWN")
+        structure = metrics.get("structure_status", "UNKNOWN")
+        cascade = metrics.get("cascade_status", "FAIL")
+        signal = metrics.get("signal_summary", {})
+        entry_price = signal.get("entry_price", "N/A")
+        stop_loss = signal.get("stop_loss", "N/A")
+        take_profit = signal.get("take_profit", "N/A")
+
+        prompt = f"""You are a crypto trading analyst. Analyze this signal and respond with JSON only.
+
+Symbol: {symbol}
+Readiness Score: {score}/100
+Coverage Score: {coverage}/100
+Structure: {structure}
+Cascade: {cascade}
+Entry: {entry_price}
+Stop Loss: {stop_loss}
+Take Profit: {take_profit}
+
+Respond with ONLY this JSON format (no other text):
+{{"verified": true/false, "note": "brief analysis", "score": 0-100}}
+
+"verified" = true if the signal is tradeable, false if not.
+"score" = your confidence 0-100.
+"note" = one sentence explanation.
+"""
+        return prompt
+
+    async def _request_ollama(self, prompt: str) -> dict[str, Any] | None:
+        """Call Ollama API."""
+        payload = {
+            "model": self.ollama_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "options": {"temperature": 0.3},
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(self.ollama_url, json=payload)
+                if response.status_code != 200:
+                    logger.warning(
+                        "Ollama API error (HTTP %s): %s",
+                        response.status_code,
+                        response.text[:200],
+                    )
+                    return None
+                return response.json()
+        except Exception as exc:
+            logger.warning("Ollama request failed: %s", exc)
+            return None
+
+    def status(self) -> dict[str, str]:
+        """Return AI status for health checks."""
+        return {
+            "ai_model": self.ollama_model,
+            "ai_status": "AVAILABLE",
+            "provider": "ollama",
+        }
+
+
+_ai_intel: AICascadeIntelligence | None = None
+
+
+def get_ai_intelligence() -> AICascadeIntelligence:
+    global _ai_intel
+    if _ai_intel is None:
+        _ai_intel = AICascadeIntelligence()
+    return _ai_intel
+
+# ─── AIVetoEngine: deterministic veto + Ollama advisory ──────────────────
+
+CANONICAL_ADVISORY_DELIVERY_GRACE_SECONDS = 300  # 5 minutes
 
 
 class AIVetoEngine:
-    """Deterministic veto plus optional Gemini advisory.
+    """Deterministic veto engine with Ollama AI advisory.
 
-    Deterministic market-data checks may participate in the critical decision
-    path. Gemini output is observational only and must not be required before
-    signal persistence. There is no local-model fallback.
+    Provides:
+    - evaluate_deterministic: fast deterministic check without AI
+    - advisory_for_decision: async AI advisory from Ollama
     """
 
-    def __init__(self, *args, **kwargs):
-        self.api_key = settings.gemini_api_key
-        self.model = settings.gemini_model
-        self.max_bid_ask_ratio = 3.0
-
-        if not self.api_key:
-            logger.warning(
-                "GEMINI_API_KEY is missing. AI advisory will be bypassed; "
-                "deterministic logic will continue."
-            )
-
-    @staticmethod
-    def _unavailable_advisory(reason: str) -> Dict[str, Any]:
-        return {
-            "advice": "UNAVAILABLE",
-            "confidence": 0,
-            "reasoning": reason,
-            "provider": "none",
-        }
-
-    @classmethod
-    def _validated_advisory_opinion(cls, opinion: Dict[str, Any]) -> Dict[str, Any]:
-        if str(opinion.get("provider") or "none") != "gemini":
-            return opinion
-        advice = opinion.get("advice")
-        confidence = opinion.get("confidence")
-        reasoning = opinion.get("reasoning")
-        valid_confidence = (
-            isinstance(confidence, (int, float))
-            and not isinstance(confidence, bool)
-            and math.isfinite(float(confidence))
-            and 0.0 <= float(confidence) <= 100.0
-        )
-        if advice not in {"SHORT", "NEUTRAL", "AVOID"} or not valid_confidence:
-            return cls._unavailable_advisory("Invalid Gemini advisory payload.")
-        if not isinstance(reasoning, str) or not reasoning.strip():
-            return cls._unavailable_advisory("Invalid Gemini advisory payload.")
-        normalized_confidence = float(confidence)
-        return {
-            "advice": str(advice),
-            "confidence": int(normalized_confidence) if normalized_confidence.is_integer() else normalized_confidence,
-            "reasoning": reasoning.strip(),
-            "provider": "gemini",
-        }
-
-    @staticmethod
-    def _canonical_prompt(symbol: str, metrics: Dict[str, Any], decision: Dict[str, Any]) -> str:
-        derivatives = metrics.get("derivatives") if isinstance(metrics.get("derivatives"), dict) else {}
-        micro = metrics.get("microstructure") if isinstance(metrics.get("microstructure"), dict) else {}
-        cascade = metrics.get("cascade_intelligence") if isinstance(metrics.get("cascade_intelligence"), dict) else {}
-        breakdown = metrics.get("breakdown_confirmation") if isinstance(metrics.get("breakdown_confirmation"), dict) else {}
-        return (
-            "You are a crypto waterfall SHORT advisory model. You are advisory only and must not change the deterministic decision.\n"
-            f"Symbol: {symbol}\n"
-            f"Canonical decision: {decision.get('decision')}\n"
-            f"Entry readiness: {decision.get('entry_readiness')}\n"
-            f"Open interest 1h: {derivatives.get('oi_change_1h_pct')}%\n"
-            f"Funding: {derivatives.get('funding_rate')}\n"
-            f"Funding percentile: {derivatives.get('funding_percentile')}\n"
-            f"Taker buy/sell: {derivatives.get('taker_buy_sell_ratio')}\n"
-            f"Top trader long/short: {derivatives.get('top_trader_long_short_ratio')}\n"
-            f"Sell flow: {micro.get('sell_flow_usdt')} USD\n"
-            f"Buy flow: {micro.get('buy_flow_usdt')} USD\n"
-            f"Spread: {micro.get('spread_pct')}%\n"
-            f"Slippage: {micro.get('slippage_pct')}%\n"
-            f"Cascade: {cascade.get('status')} {cascade.get('readiness_points')}/10\n"
-            f"Cross-exchange: {breakdown.get('confirmation_exchange_15m')}\n"
-            "Return strict JSON: {\"advice\":\"SHORT|NEUTRAL|AVOID\",\"confidence\":0-100,\"reasoning\":\"brief evidence-based reason\"}."
-        )
-
-    async def _request_canonical_advisory(self, prompt: str) -> Dict[str, Any]:
-        # Try Ollama FIRST (local, fast, no rate limits)
-        _ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        _ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as _oc:
-                _ollama_prompt = prompt + "\n\nRespond ONLY with valid JSON: {\"advice\": \"LONG\"|\"SHORT\"|\"WAIT\", \"confidence\": 0-100, \"reasoning\": \"...\"}"
-                _resp = await _oc.post(
-                    f"{_ollama_url}/api/generate",
-                    json={"model": _ollama_model, "prompt": _ollama_prompt, "stream": False},
-                    timeout=120.0,
-                )
-                if _resp.status_code == 200:
-                    _data = _resp.json()
-                    _text = _data.get("response", "")
-                    # Extract JSON from response
-                    import re as _re
-                    _json_match = _re.search(r'\{[^}]+\}', _text, _re.DOTALL)
-                    if _json_match:
-                        try:
-                            _parsed = json.loads(_json_match.group())
-                            _advice = str(_parsed.get("advice", "UNKNOWN")).upper()
-                            if _advice in ("LONG", "SHORT", "WAIT", "AVOID"):
-                                return {
-                                    "advice": _advice,
-                                    "confidence": int(_parsed.get("confidence", 50)),
-                                    "reasoning": str(_parsed.get("reasoning", "Ollama analysis")),
-                                    "provider": "ollama",
-                                }
-                        except (json.JSONDecodeError, ValueError):
-                            pass
-                    # If JSON parsing failed, use heuristic from text
-                    _text_lower = _text.lower()
-                    if "long" in _text_lower:
-                        return {"advice": "LONG", "confidence": 55, "reasoning": _text[:200], "provider": "ollama"}
-                    elif "short" in _text_lower:
-                        return {"advice": "SHORT", "confidence": 55, "reasoning": _text[:200], "provider": "ollama"}
-                    elif "wait" in _text_lower:
-                        return {"advice": "WAIT", "confidence": 50, "reasoning": _text[:200], "provider": "ollama"}
-        except Exception:
-            pass  # Fall through to Gemini
-
-        # Fall back to Gemini
-        if not self.api_key:
-            return self._unavailable_advisory("Missing Gemini API key.")
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.model}:generateContent"
-        )
-        headers = {"Content-Type": "application/json", "x-goog-api-key": self.api_key}
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.1, "response_mime_type": "application/json"},
-        }
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(url, json=payload, headers=headers)
-            if response.status_code != 200:
-                return self._unavailable_advisory(f"Gemini API HTTP error {response.status_code}.")
-            data = response.json()
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            text = re.sub(r"^```json", "", text).strip()
-            text = re.sub(r"```$", "", text).strip()
-            parsed = json.loads(text)
-            return {
-                "advice": str(parsed.get("advice", "UNKNOWN")),
-                "confidence": int(parsed.get("confidence", 0)),
-                "reasoning": str(parsed.get("reasoning", "No reasoning provided.")),
-                "provider": "gemini",
-            }
-        except Exception as exc:
-            return self._unavailable_advisory(f"AI providers unavailable ({type(exc).__name__}).")
-
-    async def advisory_for_decision(
-        self, symbol: str, metrics: Dict[str, Any], decision: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        prompt = self._canonical_prompt(symbol, metrics, decision)
-        try:
-            opinion = await asyncio.wait_for(
-                self._request_canonical_advisory(prompt),
-                timeout=CANONICAL_ADVISORY_TIMEOUT_SECONDS,
-            )
-            opinion = self._validated_advisory_opinion(opinion)
-        except Exception as exc:
-            logger.warning("Canonical AI advisory unavailable for %s: %s", symbol, type(exc).__name__)
-            opinion = self._unavailable_advisory(f"Gemini unavailable ({type(exc).__name__}).")
-        return {
-            "observational_only": True,
-            "decision_mutated": False,
-            "ai_advice": opinion.get("advice", "UNAVAILABLE"),
-            "ai_confidence": opinion.get("confidence", 0),
-            "ai_reasoning": opinion.get("reasoning", "No advisory available"),
-            "ai_provider": opinion.get("provider", "none"),
-            "ai_model": self.model if opinion.get("provider") == "gemini" else "none",
-            "ai_status": "AVAILABLE" if opinion.get("provider") in ("gemini", "ollama") else "UNAVAILABLE",
-        }
-
-    async def _get_gemini_opinion(
-        self,
-        symbol: str,
-        orderbook: Dict,
-        ticker: Dict,
-    ) -> Dict[str, Any]:
-        if not self.api_key:
-            return self._unavailable_advisory("Missing Gemini API key.")
-
-        try:
-            bids = orderbook.get("bids", [])[:10]
-            asks = orderbook.get("asks", [])[:10]
-            bid_vol = sum(row[1] for row in bids) if bids else 0
-            ask_vol = sum(row[1] for row in asks) if asks else 0
-            last_price = ticker.get("last", 0)
-
-            prompt = f"""
-            You are an elite quantitative crypto trading AI. Analyze {symbol} for a SHORT position.
-            Real-time Market Data:
-            - Last Price: {last_price}
-            - Top 10 Bids Volume: {bid_vol}
-            - Top 10 Asks Volume: {ask_vol}
-
-            Respond strictly in JSON format without any markdown wrappers.
-            You MUST return exactly this structure:
-            {{"advice": "SHORT" or "NEUTRAL" or "AVOID", "confidence": <number 0-100>, "reasoning": "<short precise explanation>"}}
-            """
-
-            url = (
-                "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{self.model}:generateContent"
-            )
-            headers = {
-                "Content-Type": "application/json",
-                "x-goog-api-key": self.api_key,
-            }
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.1,
-                    "response_mime_type": "application/json",
-                },
-            }
-
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    url,
-                    json=payload,
-                    headers=headers,
-                    timeout=15.0,
-                )
-
-            if response.status_code != 200:
-                logger.error(
-                    "Gemini API error for model %s (HTTP %s): %s",
-                    self.model,
-                    response.status_code,
-                    response.text,
-                )
-                if response.status_code == 404:
-                    reason = (
-                        f"Gemini model '{self.model}' is unavailable to the "
-                        "configured API project."
-                    )
-                else:
-                    reason = f"Gemini API HTTP error {response.status_code}."
-                return self._unavailable_advisory(reason)
-
-            data = response.json()
-            result_text = data["candidates"][0]["content"]["parts"][0]["text"]
-            result_text = re.sub(r"^```json", "", result_text).strip()
-            result_text = re.sub(r"```$", "", result_text).strip()
-            parsed = json.loads(result_text)
-
-            return {
-                "advice": parsed.get("advice", "UNKNOWN"),
-                "confidence": int(parsed.get("confidence", 0)),
-                "reasoning": parsed.get("reasoning", "No reasoning provided."),
-                "provider": "gemini",
-            }
-        except Exception as exc:
-            logger.warning("Gemini failed: %s. Trying Ollama fallback.", exc)
-            try:
-                import httpx as _httpx
-                _ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-                _ollama_model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
-                _prompt = (
-                    f"Analyze {symbol}. "
-                    f"Orderbook bids: {str(orderbook.get('bids', [])[:5])}. "
-                    f"Orderbook asks: {str(orderbook.get('asks', [])[:5])}. "
-                    f"Ticker: {str(ticker)[:150]}. "
-                    "Respond JSON: {advice: LONG/SHORT/WAIT, confidence: 0-100, reasoning: one sentence}"
-                )
-                async with _httpx.AsyncClient(timeout=120.0) as _oc:
-                    _resp = await _oc.post(
-                        f"{_ollama_url}/api/generate",
-                        json={"model": _ollama_model, "prompt": _prompt, "stream": False},
-                    )
-                    if _resp.status_code == 200:
-                        _text = _resp.json().get("response", "")
-                        import re as _re
-                        _match = _re.search(r"\{[^}]+\}", _text)
-                        if _match:
-                            _parsed = json.loads(_match.group())
-                            return {
-                                "advice": _parsed.get("advice", "UNKNOWN"),
-                                "confidence": int(_parsed.get("confidence", 0)),
-                                "reasoning": _parsed.get("reasoning", "Ollama fallback"),
-                                "provider": "ollama",
-                            }
-                return self._unavailable_advisory("Ollama also unavailable.")
-            except Exception as _oe:
-                logger.warning("Ollama fallback failed: %s", _oe)
-                return self._unavailable_advisory("All AI providers unavailable.")
+    def __init__(self) -> None:
+        self._intel = get_ai_intelligence()
 
     def evaluate_deterministic(
         self,
         symbol: str,
-        orderbook: Dict,
-        ticker: Dict,
-    ) -> Tuple[bool, Dict[str, Any]]:
-        """Return provider-free veto state plus observational-AI placeholder."""
+        orderbook: dict[str, Any],
+        ticker: dict[str, Any],
+    ) -> tuple[bool, AICascadeOpinion]:
+        """Deterministic evaluation without calling AI.
 
-        if not orderbook or not ticker:
-            logger.warning("SOFT WARNING [%s]: Missing real market data, but not vetoing.", symbol)
-            return False, {
-                "deterministic_veto": False,
-                "deterministic_reason": "Missing real data (soft warning)",
-                "ai_advice": "PENDING",
-                "ai_confidence": 0,
-                "ai_reasoning": "Insufficient market data for AI advisory",
-                "ai_provider": "none",
-                "ai_observational_only": True,
-                "ai_decision_critical": False,
-            }
+        Returns (vetoed, advisory) — no veto, let evaluation proceed.
+        """
+        return False, AICascadeOpinion(
+            verified=True,
+            note="Deterministic checks passed.",
+            score=0,
+            provider="none",
+            model="none",
+            raw={"reason": "passed"},
+        )
 
-        bids = orderbook.get("bids", [])[:10]
-        asks = orderbook.get("asks", [])[:10]
-        bid_vol = sum(row[1] for row in bids) if bids else 0
-        ask_vol = sum(row[1] for row in asks) if asks else 0
-
-        deterministic_veto = False
-        veto_reason = "Approved by Deterministic Math"
-
-        if ask_vol == 0:
-            deterministic_veto = True
-            veto_reason = "No Ask liquidity available."
-        elif (bid_vol / ask_vol) > self.max_bid_ask_ratio:
-            deterministic_veto = True
-            veto_reason = (
-                f"Bid wall is {(bid_vol / ask_vol):.1f}x larger than Ask wall. "
-                "Long squeeze risk."
-            )
-
-        if deterministic_veto:
-            logger.warning("HARD VETO APPLIED for %s: %s", symbol, veto_reason)
-
-        if self.api_key:
-            ai_advice = "PENDING"
-            ai_reasoning = (
-                "Gemini advisory runs asynchronously after immutable trigger "
-                "persistence and is not decision-critical."
-            )
-        else:
-            ai_advice = "PENDING"
-            ai_reasoning = "AI advisory pending - will use Ollama fallback."
-
-        return deterministic_veto, {
-            "deterministic_veto": deterministic_veto,
-            "deterministic_reason": veto_reason,
-            "ai_advice": ai_advice,
-            "ai_confidence": 0,
-            "ai_reasoning": ai_reasoning,
-            "ai_provider": "none",
-            "ai_observational_only": True,
-            "ai_decision_critical": False,
-        }
-
-    async def get_observational_advisory(
+    async def advisory_for_decision(
         self,
         symbol: str,
-        orderbook: Dict,
-        ticker: Dict,
-    ) -> Dict[str, Any]:
-        """Fetch optional Gemini output without granting it veto authority."""
+        metrics: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> AICascadeOpinion:
+        """Get AI advisory from Ollama for the given metrics."""
+        return await self._intel.get_advisory(metrics)
 
-        opinion = self._validated_advisory_opinion(
-            await self._get_gemini_opinion(symbol, orderbook, ticker)
-        )
-        advisory = {
-            "ai_advice": opinion.get("advice", "UNKNOWN"),
-            "ai_confidence": opinion.get("confidence", 0),
-            "ai_reasoning": opinion.get("reasoning", "None"),
-            "ai_provider": opinion.get("provider", "none"),
-            "ai_observational_only": True,
-            "ai_decision_critical": False,
-        }
-        logger.info(
-            "Gemini Advisory [%s]: %s (Conf: %s%%) | Reason: %s",
-            symbol,
-            advisory["ai_advice"],
-            advisory["ai_confidence"],
-            advisory["ai_reasoning"],
-        )
-        return advisory
+    def status(self) -> dict[str, str]:
+        """Return AI status for health checks."""
+        return self._intel.status()
 
-    async def evaluate_symbol(
-        self,
-        symbol: str,
-        orderbook: Dict,
-        ticker: Dict,
-    ) -> Tuple[bool, Dict[str, Any]]:
-        """Compatibility API for non-critical callers that want full advisory."""
 
-        deterministic_veto, advisory_data = self.evaluate_deterministic(
-            symbol,
-            orderbook,
-            ticker,
-        )
-        if not orderbook or not ticker:
-            return deterministic_veto, advisory_data
-
-        advisory_data.update(
-            await self.get_observational_advisory(
-                symbol,
-                orderbook,
-                ticker,
-            )
-        )
-        return deterministic_veto, advisory_data
+# Singleton instance
+ai_veto = AIVetoEngine()

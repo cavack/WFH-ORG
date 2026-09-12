@@ -2,7 +2,7 @@
 ai_signal_advisor.py — AI-Powered Multi-Angle Signal Advisor for WaterfallHunter.
 
 Provides comprehensive multi-angle analysis of trading signals using:
-  1. Gemini (primary, via Google Generative Language API)
+  1. Ollama (local, via Ollama API)
   2. Ollama (fallback, local LLM)
   3. Rule-based heuristic (final fallback)
 
@@ -12,7 +12,7 @@ Usage
     from waterfallhunter.core.ai_signal_advisor import AISignalAdvisor
 
     advisor = AISignalAdvisor(
-        gemini_key="AIza...",
+        # Ollama removed
         ollama_url="http://localhost:11434",
     )
     result = await advisor.analyze(signal_data={...})
@@ -21,7 +21,7 @@ Usage
 The returned dict always has the same shape regardless of provider:
 
     {
-        "provider": "gemini" | "ollama" | "heuristic",
+        "provider": "ollama" | "heuristic",
         "technical_score": 75,      # 0-100
         "risk_score": 60,           # 0-100
         "timing_score": 70,         # 0-100
@@ -50,7 +50,7 @@ logger = logging.getLogger("waterfallhunter.ai_signal_advisor")
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-_GEMINI_URL_TMPL = (
+_OLLAMA_URL_TMPL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     "?key={api_key}"
 )
@@ -58,7 +58,7 @@ _GEMINI_URL_TMPL = (
 _CACHE_TTL_SECONDS = 300          # 5 minutes
 _RATE_LIMIT_MAX_REQUESTS = 10    # per minute
 _RATE_LIMIT_WINDOW_SECONDS = 60  # 1 minute window
-_HTTP_TIMEOUT = 30.0             # seconds for Gemini
+_HTTP_TIMEOUT = 120.0            # seconds for Ollama (CPU mode)
 _OLLAMA_TIMEOUT = 120.0            # seconds for Ollama (CPU mode is slow)
 
 
@@ -91,7 +91,7 @@ def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
 
 
 def _build_prompt(signal_data: dict[str, Any]) -> str:
-    """Construct the multi-angle analysis prompt sent to Gemini / Ollama.
+    """Construct the multi-angle analysis prompt sent to Ollama / Ollama.
 
     The prompt asks the model to analyse a single trading signal from five
     angles and return a **strict JSON** block so parsing is deterministic.
@@ -441,7 +441,7 @@ class _CacheEntry:
 
 
 class _RateLimiter:
-    """Simple sliding-window rate limiter for Gemini API calls.
+    """Simple sliding-window rate limiter for Ollama API calls.
 
     Limits to ``max_requests`` within a ``window_seconds`` window.
     """
@@ -469,15 +469,10 @@ class _RateLimiter:
 
 
 class AISignalAdvisor:
-    """AI-powered multi-angle signal advisor with Gemini → Ollama → Heuristic fallback.
+    """AI-powered multi-angle signal advisor with Ollama → Heuristic fallback.
 
     Parameters
     ----------
-    gemini_key : str | None
-        Google Gemini API key. Falls back to ``GEMINI_API_KEY`` env var.
-    gemini_model : str
-        Gemini model name. Falls back to ``GEMINI_MODEL`` env var,
-        default ``gemini-flash-lite-latest``.
     ollama_url : str | None
         Base URL for Ollama. Falls back to ``OLLAMA_BASE_URL`` env var,
         default ``http://localhost:11434``.
@@ -487,20 +482,18 @@ class AISignalAdvisor:
     cache_ttl : int
         Cache TTL in seconds. Default 300 (5 minutes).
     rate_limit_max : int
-        Max requests per minute to Gemini. Default 10.
+        Max requests per minute to Ollama. Default 10.
     """
 
     def __init__(
         self,
-        gemini_key: str | None = None,
-        gemini_model: str | None = None,
+        # Ollama removed — Ollama only
         ollama_url: str | None = None,
         ollama_model: str | None = None,
         cache_ttl: int = _CACHE_TTL_SECONDS,
         rate_limit_max: int = _RATE_LIMIT_MAX_REQUESTS,
     ) -> None:
-        self.gemini_key = gemini_key or _env("GEMINI_API_KEY", "") or None
-        self.gemini_model = gemini_model or _env("GEMINI_MODEL", "gemini-flash-lite-latest")
+        # Ollama removed — Ollama only
         self.ollama_url = (ollama_url or _env("OLLAMA_BASE_URL", "http://localhost:11434") or "").rstrip("/")
         self.ollama_model = ollama_model or _env("OLLAMA_MODEL", "llama3.2:3b")
         self.cache_ttl = cache_ttl
@@ -509,9 +502,9 @@ class AISignalAdvisor:
         self._rate_limiter = _RateLimiter(max_requests=rate_limit_max)
 
         logger.info(
-            "AISignalAdvisor initialised: gemini_model=%s, gemini_key=%s, ollama_url=%s, ollama_model=%s",
-            self.gemini_model,
-            "***" if self.gemini_key else "None",
+            "AISignalAdvisor initialised: ollama_url=%s, ollama_model=%s",
+            self.ollama_model,
+            
             self.ollama_url,
             self.ollama_model,
         )
@@ -521,7 +514,7 @@ class AISignalAdvisor:
     async def analyze(self, signal_data: dict[str, Any]) -> dict[str, Any]:
         """Analyse a trading signal from multiple angles.
 
-        Tries Gemini first, then Ollama, then falls back to rule-based
+        Tries Ollama first, then Ollama, then falls back to rule-based
         heuristic. Results are cached per-symbol for ``cache_ttl`` seconds.
 
         Returns
@@ -537,7 +530,7 @@ class AISignalAdvisor:
             logger.debug("Cache hit for %s", symbol)
             return cached
 
-        # ── Build the prompt once (shared by Gemini & Ollama) ──
+        # ── Build the prompt once (shared by Ollama & Ollama) ──
         prompt = _build_prompt(signal_data)
 
         # ── Try Ollama FIRST (local, reliable, no rate limits) ──
@@ -552,70 +545,10 @@ class AISignalAdvisor:
         else:
             logger.debug("Ollama URL not configured, skipping Ollama")
 
-        # ── Try Gemini as fallback ──
-        if self.gemini_key:
-            try:
-                result = await self._call_gemini(prompt)
-                if result is not None:
-                    await self._set_cached(symbol, result)
-                    return result
-            except Exception as exc:
-                logger.warning("Gemini analysis failed: %s", exc)
-        else:
-            logger.debug("Gemini API key not configured, skipping Gemini")
-
         # ── Final fallback to heuristic ──
         logger.info("All AI providers unavailable, using heuristic analysis for %s", symbol)
         result = _heuristic_analysis(signal_data)
         await self._set_cached(symbol, result)
-        return result
-
-    # ── Gemini ──────────────────────────────────────────────────────────────
-
-    async def _call_gemini(self, prompt: str) -> dict[str, Any] | None:
-        """Call the Gemini API and return parsed result, or None on failure."""
-        if not await self._rate_limiter.acquire():
-            logger.warning("Gemini rate limit exceeded, skipping")
-            return None
-
-        url = _GEMINI_URL_TMPL.format(model=self.gemini_model, api_key=self.gemini_key)
-        payload = {
-            "contents": [
-                {
-                    "parts": [{"text": prompt}],
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.3,
-                "maxOutputTokens": 1024,
-            },
-        }
-
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-            logger.debug("Calling Gemini API: model=%s", self.gemini_model)
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            data = response.json()
-
-        # Extract text from Gemini response structure
-        candidates = data.get("candidates", [])
-        if not candidates:
-            logger.warning("Gemini returned no candidates")
-            return None
-
-        content = candidates[0].get("content", {})
-        parts = content.get("parts", [])
-        if not parts:
-            logger.warning("Gemini returned no content parts")
-            return None
-
-        raw_text = parts[0].get("text", "")
-        if not raw_text:
-            logger.warning("Gemini returned empty text")
-            return None
-
-        result = _parse_response(raw_text)
-        result["provider"] = "gemini"
         return result
 
     # ── Ollama ──────────────────────────────────────────────────────────────
