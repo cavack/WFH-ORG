@@ -1,46 +1,45 @@
-"""Fail-closed release, DR, and security certification gate.
-
-This pure module certifies only supplied evidence. It does not deploy,
-restore, access secrets, or execute orders. Missing evidence is failure.
-"""
+"""Pure fail-closed release certification policy; it performs no deployment."""
 from __future__ import annotations
+import re
 from enum import Enum
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from waterfallhunter.core.schema_contract import CURRENT_RUNTIME_SCHEMA_VERSION
+
+_SHA = re.compile(r"^[0-9a-f]{7,64}$")
+_IMAGE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 
 class CertificationStatus(str, Enum):
     CERTIFIED = "CERTIFIED"
     NOT_CERTIFIED = "NOT_CERTIFIED"
 
 class ReleaseCertificationEvidence(BaseModel):
-    """Immutable evidence for one exact release artifact."""
     model_config = ConfigDict(extra="forbid", frozen=True)
     git_sha: str
-    backend_image_digest: str = Field(min_length=8)
-    frontend_image_digest: str = Field(min_length=8)
+    backend_image_digest: str
+    frontend_image_digest: str
+    artifact_identity_verified: StrictBool
     schema_version: int = Field(ge=1)
-    schema_verified: bool
-    restore_drill_passed: bool
-    rollback_rehearsal_passed: bool
-    post_deploy_soak_passed: bool
+    schema_verified: StrictBool
+    restore_drill_passed: StrictBool
+    rollback_rehearsal_passed: StrictBool
+    post_deploy_soak_passed: StrictBool
     oom_or_unexpected_restart_count: int = Field(ge=0)
-    deterministic_security_gate_passed: bool
-    signal_only_verified: bool
-    live_trading_enabled: bool
-
-    @field_validator("git_sha", "backend_image_digest", "frontend_image_digest")
-    @classmethod
-    def identity_must_not_be_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("release identity evidence must not be blank")
-        if value == value.strip() and value == "":
-            raise ValueError("release identity evidence must not be blank")
-        return value
+    deterministic_security_gate_passed: StrictBool
+    signal_only_verified: StrictBool
+    live_trading_enabled: StrictBool
 
     @field_validator("git_sha")
     @classmethod
-    def git_sha_must_be_short_sha_or_longer(cls, value: str) -> str:
-        if len(value) < 7:
-            raise ValueError("git SHA must have at least 7 characters")
+    def git_sha_must_be_verifiable(cls, value: str) -> str:
+        if not _SHA.fullmatch(value):
+            raise ValueError("git_sha must be a 7-64 character lowercase hexadecimal SHA")
+        return value
+
+    @field_validator("backend_image_digest", "frontend_image_digest")
+    @classmethod
+    def image_must_be_immutable_digest(cls, value: str) -> str:
+        if not _IMAGE.fullmatch(value):
+            raise ValueError("image identity must contain an immutable @sha256: 64-hex digest")
         return value
 
 class ReleaseCertificationResult(BaseModel):
@@ -49,8 +48,9 @@ class ReleaseCertificationResult(BaseModel):
     reasons: tuple[str, ...] = Field(default_factory=tuple)
 
 def evaluate_release_certification(evidence: ReleaseCertificationEvidence) -> ReleaseCertificationResult:
-    """Return CERTIFIED only if every real evidence fact passes."""
     checks = (
+        (evidence.artifact_identity_verified, "ARTIFACT_IDENTITY_NOT_VERIFIED"),
+        (evidence.schema_version == CURRENT_RUNTIME_SCHEMA_VERSION, "SCHEMA_VERSION_MISMATCH"),
         (evidence.schema_verified, "SCHEMA_VERIFICATION_FAILED"),
         (evidence.restore_drill_passed, "RESTORE_DRILL_NOT_PASSED"),
         (evidence.rollback_rehearsal_passed, "ROLLBACK_REHEARSAL_NOT_PASSED"),
@@ -61,7 +61,4 @@ def evaluate_release_certification(evidence: ReleaseCertificationEvidence) -> Re
         (not evidence.live_trading_enabled, "LIVE_TRADING_MUST_BE_DISABLED"),
     )
     reasons = tuple(reason for passed, reason in checks if not passed)
-    return ReleaseCertificationResult(
-        status=CertificationStatus.CERTIFIED if not reasons else CertificationStatus.NOT_CERTIFIED,
-        reasons=reasons,
-    )
+    return ReleaseCertificationResult(CertificationStatus.CERTIFIED if not reasons else CertificationStatus.NOT_CERTIFIED, reasons)
