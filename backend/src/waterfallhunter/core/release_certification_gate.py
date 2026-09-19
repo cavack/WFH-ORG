@@ -14,7 +14,7 @@ class CertificationStatus(str, Enum):
 class ReleaseCertificationEvidence(BaseModel):
     """Immutable evidence for one exact release artifact."""
     model_config = ConfigDict(extra="forbid", frozen=True)
-    git_sha: str = Field(min_length=7)
+    git_sha: str
     backend_image_digest: str = Field(min_length=8)
     frontend_image_digest: str = Field(min_length=8)
     schema_version: int = Field(ge=1)
@@ -32,6 +32,15 @@ class ReleaseCertificationEvidence(BaseModel):
     def identity_must_not_be_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("release identity evidence must not be blank")
+        if value == value.strip() and value == "":
+            raise ValueError("release identity evidence must not be blank")
+        return value
+
+    @field_validator("git_sha")
+    @classmethod
+    def git_sha_must_be_short_sha_or_longer(cls, value: str) -> str:
+        if len(value) < 7:
+            raise ValueError("git SHA must have at least 7 characters")
         return value
 
 class ReleaseCertificationResult(BaseModel):
