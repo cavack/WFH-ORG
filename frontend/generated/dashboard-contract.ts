@@ -30,10 +30,18 @@ export interface DecisionTerminalCounts {
   UNAVAILABLE: number;
 }
 
+export interface DecisionTerminalOrigin {
+  origin: string;
+  count: number;
+  share_pct: number;
+}
+
 export interface ZeroEntryReadyDiagnostics {
   entry_ready_zero: boolean;
   evaluated_candidates: number;
   top_reasons: DecisionDiagnosticReason[];
+  current_blockers?: DecisionDiagnosticReason[];
+  terminal_origins?: DecisionTerminalOrigin[];
   pipeline_degraded?: boolean;
   systemic_unavailable_reasons?: DecisionDiagnosticReason[];
 }

@@ -94,6 +94,29 @@ function candidate({
         evidence_coverage_pct: coverage,
         evaluated_at: Math.floor(now - analysisAge),
         block_reasons: decision === "LATE" ? ["ANTI_CHASE_HARD_BLOCK"] : decision === "NO_TRADE" ? ["EXECUTION_UNAVAILABLE"] : [],
+        current_block_reasons: decision === "NO_TRADE" ? ["EXECUTION_UNAVAILABLE"] : [],
+        decision_before_anti_chase: decision === "LATE" ? "ENTRY_READY" : decision,
+        current_decision_before_terminal_retention: decision === "LATE" ? "ENTRY_READY" : decision,
+        late_origin: decision === "LATE" ? "ANTI_CHASE" : undefined,
+        anti_chase_current: decision === "LATE" ? {
+          available: true,
+          extension_atr: 0.4,
+          threshold_atr: 1.2,
+          currently_blocked: false,
+          source: "anti_chase.cross_timeframe",
+          source_timeframe: "15m",
+          confirmed_support_break: true,
+          single_close_below_support: false,
+        } : {
+          available: true, extension_atr: 0.8, threshold_atr: 1.2, currently_blocked: false,
+          source: "anti_chase.cross_timeframe", source_timeframe: "15m",
+          confirmed_support_break: false, single_close_below_support: false,
+        },
+        late_transition: decision === "LATE" ? {
+          origin: "ANTI_CHASE", occurred_at: Math.floor(now - analysisAge - 120),
+          extension_atr: 1.35, source_timeframe: "15m",
+          confirmed_support_break: true, single_close_below_support: false,
+        } : undefined,
         reason_codes: decision === "LATE" ? ["CASCADE_PARTIAL"] : ["ENTRY_GATES_PASS"],
         policy: { max_analysis_age_seconds: 180, max_reference_age_seconds: 60 },
         trade_plan: hasPlan ? plan(leverageStatus === "AVAILABLE" ? leverage : null) : null,
@@ -103,7 +126,7 @@ function candidate({
           policy_version: "adaptive_signal_leverage_v1",
           reason: leverageStatus === "AVAILABLE" ? null : `controlled ${leverageStatus.toLowerCase()}`,
         },
-        evidence_summary: evidence(coverage === 100 ? "COMPLETE" : "PARTIAL", decision === "LATE" ? 2.4 : 0.8),
+        evidence_summary: evidence(coverage === 100 ? "COMPLETE" : "PARTIAL", decision === "LATE" ? 0.4 : 0.8),
       },
     },
   };
@@ -140,7 +163,7 @@ function snapshot(version: number, swapped = false, omitDelta = false) {
       forming,
       active: [],
       late: ["GAMMA/USDT:USDT"],
-      zero_entry_ready_diagnostics: { entry_ready_zero: false, evaluated_candidates: Object.keys(candidates).length, top_reasons: [], pipeline_degraded: false, systemic_unavailable_reasons: [] },
+      zero_entry_ready_diagnostics: { entry_ready_zero: false, evaluated_candidates: Object.keys(candidates).length, top_reasons: [], current_blockers: [], terminal_origins: [{ origin: "ANTI_CHASE", count: 1, share_pct: 25 }], pipeline_degraded: false, systemic_unavailable_reasons: [] },
       recent_changes: [],
     },
     final_ranking: {},
@@ -214,6 +237,10 @@ test("desktop renders canonical decision, plan, tri-state leverage, evidence and
   await expect(lateSection.getByText("GAMMA/USDT:USDT")).toBeVisible();
   await expect(lateSection.getByText("Leverage NOT RECOMMENDED")).toBeVisible();
   await expect(lateSection.getByText("LATE", { exact: true })).toBeVisible();
+  await expect(lateSection).toContainText("Late origin · Anti-chase");
+  await expect(lateSection).toContainText("Current anti-chase · 0.40 / 1.20 ATR · clear");
+  await expect(lateSection).toContainText("15m · confirmed break");
+  await expect(lateSection).not.toContainText("ANTI CHASE HARD BLOCK");
   await expect(page.getByRole("status", { name: /stale/ })).toBeVisible();
 
   await page.getByText("Research, validation & raw diagnostics").click();
@@ -226,6 +253,36 @@ test("desktop renders canonical decision, plan, tri-state leverage, evidence and
   const gammaRaw = page.locator("article.panel").filter({ hasText: "GAMMA/USDT" }).last();
   await expect(gammaRaw.getByText("NOT RECOMMENDED", { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+
+test("zero-entry diagnostics separate current blockers from terminal late origins", async ({ page }) => {
+  const zero = snapshot(1) as any;
+  zero.candidates["ALPHA/USDT:USDT"].metrics.entry_decision.decision = "NO_TRADE";
+  zero.candidates["ALPHA/USDT:USDT"].metrics.entry_decision.entry_readiness = 45;
+  zero.candidates["ALPHA/USDT:USDT"].metrics.entry_decision.trade_plan = null;
+  zero.candidates["ALPHA/USDT:USDT"].metrics.entry_decision.block_reasons = ["EXECUTION_UNAVAILABLE"];
+  zero.candidates["ALPHA/USDT:USDT"].metrics.entry_decision.current_block_reasons = ["EXECUTION_UNAVAILABLE"];
+  zero.decision_terminal.counts.ENTRY_READY = 0;
+  zero.decision_terminal.counts.NO_TRADE = 2;
+  zero.decision_terminal.entry_ready = [];
+  zero.decision_terminal.zero_entry_ready_diagnostics = {
+    entry_ready_zero: true,
+    evaluated_candidates: 4,
+    top_reasons: [{ reason: "EXECUTION_UNAVAILABLE", count: 1, share_pct: 25 }],
+    current_blockers: [{ reason: "EXECUTION_UNAVAILABLE", count: 1, share_pct: 25 }],
+    terminal_origins: [{ origin: "ANTI_CHASE", count: 1, share_pct: 25 }],
+    pipeline_degraded: false,
+    systemic_unavailable_reasons: [],
+  };
+  await routeDashboard(page, zero);
+  await page.goto("/dashboard");
+
+  const panel = page.getByText("Why ENTRY READY is zero").locator("..").locator("..");
+  await expect(panel).toContainText("Current blockers");
+  await expect(panel).toContainText("EXECUTION UNAVAILABLE · 1 (25.0%)");
+  await expect(panel).toContainText("Terminal origins");
+  await expect(panel).toContainText("ANTI CHASE · 1 (25.0%)");
 });
 
 

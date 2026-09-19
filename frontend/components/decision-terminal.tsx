@@ -47,6 +47,12 @@ function scalarText(value: unknown): string | undefined {
   return undefined;
 }
 
+function originText(value: unknown): string {
+  const raw = typeof value === "string" ? value.replaceAll("_", " ").toLowerCase() : "unknown";
+  if (raw === "anti chase") return "Anti-chase";
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
 function price(value: unknown): string {
   const number = finite(value);
   if (number === undefined) return "—";
@@ -151,6 +157,36 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
   const blocks = Array.isArray(decision.block_reasons)
     ? decision.block_reasons.filter((value): value is string => typeof value === "string")
     : [];
+  const hasCurrentBlockField = Array.isArray(decision.current_block_reasons);
+  const currentBlocks = hasCurrentBlockField
+    ? (decision.current_block_reasons as unknown[]).filter((value): value is string => typeof value === "string")
+    : blocks;
+  const antiChaseCurrent = record(decision.anti_chase_current);
+  const currentAntiExtension = finite(antiChaseCurrent.extension_atr);
+  const currentAntiThreshold = finite(antiChaseCurrent.threshold_atr);
+  const currentAntiBlocked = antiChaseCurrent.currently_blocked === true;
+  const currentAntiTimeframe = typeof antiChaseCurrent.source_timeframe === "string"
+    ? antiChaseCurrent.source_timeframe
+    : undefined;
+  const currentAntiBreakKind = antiChaseCurrent.confirmed_support_break === true
+    ? "confirmed break"
+    : antiChaseCurrent.single_close_below_support === true
+      ? "single close below support"
+      : undefined;
+  const lateOrigin = state === "LATE" && typeof decision.late_origin === "string"
+    ? decision.late_origin
+    : undefined;
+  const lateTransition = record(decision.late_transition);
+  const transitionAt = finite(lateTransition.occurred_at);
+  const transitionExtension = finite(lateTransition.extension_atr);
+  const transitionTimeframe = typeof lateTransition.source_timeframe === "string"
+    ? lateTransition.source_timeframe
+    : undefined;
+  const transitionBreakKind = lateTransition.confirmed_support_break === true
+    ? "confirmed break"
+    : lateTransition.single_close_below_support === true
+      ? "single close below support"
+      : undefined;
   const reasons = Array.isArray(decision.reason_codes)
     ? decision.reason_codes.filter((value): value is string => typeof value === "string").slice(0, 8)
     : [];
@@ -181,10 +217,25 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
           </div>
         )}
         <EvidenceGrid evidence={evidence} />
-        {blocks.length > 0 ? (
+        {state === "LATE" && lateOrigin ? (
+          <div className="mt-4 rounded-lg border border-orange-400/20 bg-orange-500/5 px-3 py-2.5 text-xs text-slate-300">
+            <p className="font-medium text-orange-100">Late origin · {originText(lateOrigin)}</p>
+            {transitionAt !== undefined ? <p className="mt-1">Became late · {timeText(transitionAt)}</p> : null}
+            {transitionExtension !== undefined ? (
+              <p className="mt-1">Extension at transition · {transitionExtension.toFixed(2)} ATR{transitionTimeframe ? ` · ${transitionTimeframe}` : ""}{transitionBreakKind ? ` · ${transitionBreakKind}` : ""}</p>
+            ) : null}
+            {currentAntiExtension !== undefined && currentAntiThreshold !== undefined ? (
+              <p className="mt-1">Current anti-chase · {currentAntiExtension.toFixed(2)} / {currentAntiThreshold.toFixed(2)} ATR · {currentAntiBlocked ? "blocked now" : "clear"}</p>
+            ) : (
+              <p className="mt-1">Current anti-chase · unavailable</p>
+            )}
+            {currentAntiTimeframe && currentAntiBreakKind ? <p className="mt-1 text-slate-400">{currentAntiTimeframe} · {currentAntiBreakKind}</p> : null}
+          </div>
+        ) : null}
+        {currentBlocks.length > 0 ? (
           <div className="mt-4 flex gap-2 rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
             <ShieldAlert size={15} className="shrink-0" />
-            <span>{blocks.join(" · ").replaceAll("_", " ")}</span>
+            <span>{currentBlocks.join(" · ").replaceAll("_", " ")}</span>
           </div>
         ) : null}
         {reasons.length > 0 ? <p className="mt-3 text-xs leading-5 text-slate-400">{reasons.join(" · ").replaceAll("_", " ")}</p> : null}
@@ -216,14 +267,19 @@ function EmptyReady({ pipelineDegraded }: Readonly<{ pipelineDegraded: boolean }
 }
 
 function ZeroEntryDiagnostics({ diagnostics }: Readonly<{ diagnostics: Rec }>) {
-  const rows = Array.isArray(diagnostics.top_reasons)
-    ? diagnostics.top_reasons.map(record).filter((row) => typeof row.reason === "string")
+  const rows = Array.isArray(diagnostics.current_blockers)
+    ? diagnostics.current_blockers.map(record).filter((row) => typeof row.reason === "string")
+    : Array.isArray(diagnostics.top_reasons)
+      ? diagnostics.top_reasons.map(record).filter((row) => typeof row.reason === "string")
+      : [];
+  const origins = Array.isArray(diagnostics.terminal_origins)
+    ? diagnostics.terminal_origins.map(record).filter((row) => typeof row.origin === "string")
     : [];
   const systemic = Array.isArray(diagnostics.systemic_unavailable_reasons)
     ? diagnostics.systemic_unavailable_reasons.map(record).filter((row) => typeof row.reason === "string")
     : [];
   const degraded = pipelineHealthDegraded(diagnostics);
-  if (!degraded && (diagnostics.entry_ready_zero !== true || rows.length === 0)) return null;
+  if (!degraded && (diagnostics.entry_ready_zero !== true || (rows.length === 0 && origins.length === 0))) return null;
   return (
     <section className={`mt-4 rounded-xl border p-4 ${degraded ? "border-rose-500/30 bg-rose-500/5" : "border-amber-500/20 bg-amber-500/5"}`}>
       <div className={`flex items-center gap-2 text-sm font-semibold ${degraded ? "text-rose-100" : "text-amber-100"}`}>
@@ -243,13 +299,30 @@ function ZeroEntryDiagnostics({ diagnostics }: Readonly<{ diagnostics: Rec }>) {
           ))}
         </div>
       ) : null}
-      <div className="mt-3 flex flex-wrap gap-2">
-        {rows.map((row) => (
-          <span key={String(row.reason)} className={`rounded-full border px-2.5 py-1 text-xs ${degraded ? "border-slate-700 bg-slate-950/50 text-slate-300" : "border-amber-500/20 bg-slate-950/50 text-slate-300"}`}>
-            {String(row.reason).replaceAll("_", " ")} · {number(row.count, 0)} ({pct(row.share_pct, 1)})
-          </span>
-        ))}
-      </div>
+      {rows.length > 0 ? (
+        <div className="mt-3">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Current blockers</p>
+          <div className="flex flex-wrap gap-2">
+            {rows.map((row) => (
+              <span key={String(row.reason)} className={`rounded-full border px-2.5 py-1 text-xs ${degraded ? "border-slate-700 bg-slate-950/50 text-slate-300" : "border-amber-500/20 bg-slate-950/50 text-slate-300"}`}>
+                {String(row.reason).replaceAll("_", " ")} · {number(row.count, 0)} ({pct(row.share_pct, 1)})
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {origins.length > 0 ? (
+        <div className="mt-3">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Terminal origins</p>
+          <div className="flex flex-wrap gap-2">
+            {origins.map((row) => (
+              <span key={String(row.origin)} className="rounded-full border border-orange-500/20 bg-slate-950/50 px-2.5 py-1 text-xs text-slate-300">
+                {String(row.origin).replaceAll("_", " ")} · {number(row.count, 0)} ({pct(row.share_pct, 1)})
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

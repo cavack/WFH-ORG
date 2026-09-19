@@ -359,20 +359,99 @@ def _trade_plan(metrics: dict[str, Any]) -> dict[str, Any] | None:
         plan["expires_at"] = expires_at
     return plan
 
-def _anti_chase_extension(metrics: dict[str, Any]) -> float | None:
+def _anti_chase_observation(
+    metrics: dict[str, Any],
+    policy: EntryDecisionPolicy | None = None,
+) -> dict[str, Any]:
+    policy = policy or EntryDecisionPolicy()
     anti = _record(metrics.get("anti_chase"))
     cross = _record(anti.get("cross_timeframe"))
     direct = _finite(cross.get("max_post_break_extension_atr"))
     if direct is not None:
-        return direct
+        timeframe = cross.get("max_post_break_extension_timeframe")
+        if not isinstance(timeframe, str):
+            timeframe = None
+        confirmed = cross.get("max_post_break_extension_confirmed_support_break")
+        single_close = cross.get("max_post_break_extension_single_close_below_support")
+        extension = max(0.0, direct)
+        return {
+            "available": True,
+            "extension_atr": extension,
+            "threshold_atr": policy.anti_chase_hard_block_atr,
+            "currently_blocked": extension >= policy.anti_chase_hard_block_atr,
+            "source": "anti_chase.cross_timeframe",
+            "source_timeframe": timeframe,
+            "confirmed_support_break": confirmed if isinstance(confirmed, bool) else None,
+            "single_close_below_support": single_close if isinstance(single_close, bool) else None,
+            "max_confirmed_post_break_extension_atr": _finite(
+                cross.get("max_confirmed_post_break_extension_atr")
+            ),
+            "entry_timeframe_max_post_break_extension_atr": _finite(
+                cross.get("entry_timeframe_max_post_break_extension_atr")
+            ),
+        }
+
     candles = _record(metrics.get("candle_features"))
-    extensions = [
-        value
-        for packet in candles.values()
-        if isinstance(packet, dict)
-        and (value := _finite(packet.get("extension_from_support_atr"))) is not None
-    ]
-    return max(extensions) if extensions else None
+    signed_available = False
+    below: list[tuple[float, str, bool]] = []
+    confirmed: list[tuple[float, str]] = []
+    entry: list[tuple[float, str]] = []
+    for timeframe, packet in candles.items():
+        if not isinstance(packet, dict):
+            continue
+        distance = _finite(packet.get("distance_to_support_atr"))
+        if distance is None:
+            continue
+        signed_available = True
+        if distance >= 0.0:
+            continue
+        extension = abs(distance)
+        support_broken = packet.get("support_broken") is True
+        below.append((extension, str(timeframe), support_broken))
+        if support_broken:
+            confirmed.append((extension, str(timeframe)))
+        if timeframe in {"15m", "5m"}:
+            entry.append((extension, str(timeframe)))
+
+    if not signed_available:
+        return {
+            "available": False,
+            "extension_atr": None,
+            "threshold_atr": policy.anti_chase_hard_block_atr,
+            "currently_blocked": False,
+            "source": "unavailable",
+            "source_timeframe": None,
+            "confirmed_support_break": None,
+            "single_close_below_support": None,
+            "max_confirmed_post_break_extension_atr": None,
+            "entry_timeframe_max_post_break_extension_atr": None,
+        }
+
+    maximum = max(below, key=lambda item: item[0]) if below else None
+    confirmed_max = max(confirmed, key=lambda item: item[0]) if confirmed else None
+    entry_max = max(entry, key=lambda item: item[0]) if entry else None
+    extension = maximum[0] if maximum else 0.0
+    support_broken = maximum[2] if maximum else None
+    return {
+        "available": True,
+        "extension_atr": round(extension, 4),
+        "threshold_atr": policy.anti_chase_hard_block_atr,
+        "currently_blocked": extension >= policy.anti_chase_hard_block_atr,
+        "source": "candle_features.signed_distance_fallback",
+        "source_timeframe": maximum[1] if maximum else None,
+        "confirmed_support_break": support_broken,
+        "single_close_below_support": (not support_broken) if maximum else None,
+        "max_confirmed_post_break_extension_atr": (
+            round(confirmed_max[0], 4) if confirmed_max else 0.0
+        ),
+        "entry_timeframe_max_post_break_extension_atr": (
+            round(entry_max[0], 4) if entry_max else 0.0
+        ),
+    }
+
+
+def _anti_chase_extension(metrics: dict[str, Any]) -> float | None:
+    return _finite(_anti_chase_observation(metrics).get("extension_atr"))
 
 
 def _evidence_summary(metrics: dict[str, Any]) -> dict[str, Any]:
@@ -520,10 +599,8 @@ def _initial_block_reasons(
         reasons.append("STRUCTURE_INVALIDATED")
     if _record(metrics.get("ai_advisory")).get("deterministic_veto") is True:
         reasons.append("DETERMINISTIC_MARKET_DATA_VETO")
-    extension = _anti_chase_extension(metrics)
-    anti_chase_late = bool(
-        extension is not None and extension >= policy.anti_chase_hard_block_atr
-    )
+    anti_chase_current = _anti_chase_observation(metrics, policy)
+    anti_chase_late = anti_chase_current["currently_blocked"] is True
     return reasons, anti_chase_late
 
 
@@ -815,6 +892,12 @@ def build_entry_decision(
     ):
         block_reasons.append("TRADE_PLAN_EXPIRED")
 
+    decision_before_anti_chase = _base_decision(
+        block_reasons=block_reasons, anti_chase_late=False,
+        status=status, readiness=readiness,
+        coverage_pct=coverage_pct, direction_ok=direction_ok, timing_ok=timing >= 10.0,
+        execution_ok=execution_ok, cross_ok=cross_ok, trade_plan_ok=trade_plan_ok, policy=policy,
+    )
     decision = _base_decision(
         block_reasons=block_reasons, anti_chase_late=anti_chase_late,
         status=status, readiness=readiness,
@@ -835,11 +918,31 @@ def build_entry_decision(
         if previous_state not in {"ENTRY_READY", "ACTIVE"} or not lifecycle_matches:
             decision = "NO_TRADE"
             block_reasons.append("ENTRY_READY_PREDECESSOR_REQUIRED")
+    current_decision_before_terminal_retention = decision
+    current_block_reasons = sorted(set(block_reasons))
+    anti_chase_current = _anti_chase_observation(metrics, policy)
     if decision in {"ENTRY_READY", "ACTIVE"} and not block_reasons:
         reasons.append("ENTRY_GATES_PASS")
     late_origin = _current_late_origin(
         decision=decision, lifecycle_state=status, anti_chase_late=anti_chase_late
     )
+    previous = _record(previous_decision)
+    previous_state = str(previous.get("decision") or "")
+    previous_late_transition = (
+        dict(previous.get("late_transition"))
+        if isinstance(previous.get("late_transition"), dict)
+        else None
+    )
+    new_late_transition = None
+    if decision == "LATE" and previous_state != "LATE" and late_origin is not None:
+        new_late_transition = {
+            "origin": late_origin,
+            "occurred_at": int(evaluated_at),
+            "extension_atr": anti_chase_current.get("extension_atr"),
+            "source_timeframe": anti_chase_current.get("source_timeframe"),
+            "confirmed_support_break": anti_chase_current.get("confirmed_support_break"),
+            "single_close_below_support": anti_chase_current.get("single_close_below_support"),
+        }
     decision, block_reasons, late_origin = _apply_previous_transition(
         previous_decision, evaluated_at=evaluated_at, decision=decision,
         block_reasons=block_reasons, lifecycle_id=lifecycle_id,
@@ -855,6 +958,10 @@ def build_entry_decision(
         "evidence_coverage_pct": coverage_pct,
         "hard_blocked": bool(block_reasons),
         "block_reasons": sorted(set(block_reasons)),
+        "current_block_reasons": current_block_reasons,
+        "decision_before_anti_chase": decision_before_anti_chase,
+        "current_decision_before_terminal_retention": current_decision_before_terminal_retention,
+        "anti_chase_current": anti_chase_current,
         "reason_codes": sorted(set(reasons)),
         "components": components,
         "evidence_summary": _evidence_summary(metrics),
@@ -868,4 +975,7 @@ def build_entry_decision(
         packet["lifecycle_id"] = lifecycle_id
     if decision == "LATE" and late_origin is not None:
         packet["late_origin"] = late_origin
+        late_transition = new_late_transition or previous_late_transition
+        if late_transition is not None:
+            packet["late_transition"] = late_transition
     return packet

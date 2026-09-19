@@ -54,6 +54,9 @@ yarn-error.log*
 Thumbs.db
 *.swp
 
+# Frontend test output
+frontend/test-results/
+
 # Temporary and legacy copies
 *.bak
 *.bak_*

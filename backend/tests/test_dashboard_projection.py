@@ -22,7 +22,29 @@ def _candidate() -> dict:
                 "entry_readiness": 61.2,
                 "evidence_coverage_pct": 98.0,
                 "reason_codes": ["TIMING_INCOMPLETE"],
-                "block_reasons": [],
+                "block_reasons": ["ANTI_CHASE_HARD_BLOCK"],
+                "current_block_reasons": [],
+                "decision_before_anti_chase": "FORMING",
+                "current_decision_before_terminal_retention": "FORMING",
+                "late_origin": "ANTI_CHASE",
+                "anti_chase_current": {
+                    "available": True,
+                    "extension_atr": 0.8,
+                    "threshold_atr": 1.2,
+                    "currently_blocked": False,
+                    "source": "anti_chase.cross_timeframe",
+                    "source_timeframe": "15m",
+                    "confirmed_support_break": True,
+                    "single_close_below_support": False,
+                },
+                "late_transition": {
+                    "origin": "ANTI_CHASE",
+                    "occurred_at": 90,
+                    "extension_atr": 1.3,
+                    "source_timeframe": "15m",
+                    "confirmed_support_break": True,
+                    "single_close_below_support": False,
+                },
                 "trade_plan": None,
                 "policy": {
                     "max_analysis_age_seconds": 180,
@@ -72,6 +94,9 @@ def test_live_projection_preserves_decision_fields_without_raw_diagnostics():
     assert projected["status"] == "FUEL-RICH"
     assert decision["decision"] == "FORMING"
     assert decision["entry_readiness"] == 61.2
+    assert decision["current_block_reasons"] == []
+    assert decision["anti_chase_current"]["currently_blocked"] is False
+    assert decision["late_transition"]["occurred_at"] == 90
     assert decision["evidence_summary"]["cascade"] == {
         "status": "PARTIAL",
         "readiness_points": 5.4,
