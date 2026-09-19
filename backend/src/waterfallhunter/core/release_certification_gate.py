@@ -61,4 +61,7 @@ def evaluate_release_certification(evidence: ReleaseCertificationEvidence) -> Re
         (not evidence.live_trading_enabled, "LIVE_TRADING_MUST_BE_DISABLED"),
     )
     reasons = tuple(reason for passed, reason in checks if not passed)
-    return ReleaseCertificationResult(CertificationStatus.CERTIFIED if not reasons else CertificationStatus.NOT_CERTIFIED, reasons)
+    return ReleaseCertificationResult(
+        status=CertificationStatus.CERTIFIED if not reasons else CertificationStatus.NOT_CERTIFIED,
+        reasons=reasons,
+    )
