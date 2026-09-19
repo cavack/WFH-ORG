@@ -41,6 +41,13 @@ _AI_FIELDS = (
     "ai_provider",
 )
 _LEVERAGE_FIELDS = ("status", "leverage", "reason", "policy_version")
+_SCORE_METADATA_FIELDS = (
+    "score_version",
+    "score",
+    "score_components",
+    "trade_eligible",
+    "watch_score",
+)
 
 
 def _record(value: Any) -> dict[str, Any]:
@@ -107,6 +114,9 @@ def project_dashboard_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
             _record(technical_shadow.get("reference")), ("price", "source")
         )
         projected["metrics"]["technical_trade_plan_shadow"] = shadow_projection
+    for field in _SCORE_METADATA_FIELDS:
+        if field in metrics:
+            projected["metrics"][field] = deepcopy(metrics[field])
     analysis_reason = metrics.get("analysis_reason") or metrics.get("error")
     if isinstance(analysis_reason, str) and analysis_reason:
         projected["metrics"]["analysis_reason"] = analysis_reason

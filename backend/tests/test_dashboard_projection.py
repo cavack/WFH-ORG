@@ -110,6 +110,112 @@ def test_payload_projection_preserves_backend_terminal_and_research_summaries():
     assert "candle_features" not in projected["candidates"]["TEST/USDT:USDT"]["metrics"]
 
 
+def _score_v2_candidate() -> dict:
+    """Candidate with full ScoreV2 metadata in metrics (mirrors production output)."""
+    base = _candidate()
+    base["score"] = 53.14
+    base["metrics"]["score_version"] = "score_v2"
+    base["metrics"]["score"] = 53.14
+    base["metrics"]["score_components"] = {
+        "cascade": 18.0,
+        "order_flow": 12.5,
+        "derivatives": 9.0,
+        "execution": 6.5,
+        "cross_exchange": 7.14,
+    }
+    base["metrics"]["trade_eligible"] = True
+    return base
+
+
+def _watch_candidate() -> dict:
+    """Candidate with watch_score only — no full score_v2."""
+    base = _candidate()
+    base["metrics"]["watch_score"] = {
+        "score": 41.0,
+        "components": {"cascade": 10.0, "order_flow": 8.0},
+    }
+    return base
+
+
+def test_score_version_survives_projection_for_score_v2_candidate():
+    projected = project_dashboard_candidate(_score_v2_candidate())
+    assert projected["metrics"]["score_version"] == "score_v2"
+
+
+def test_score_components_survive_projection_for_score_v2_candidate():
+    projected = project_dashboard_candidate(_score_v2_candidate())
+    assert projected["metrics"]["score_components"] == {
+        "cascade": 18.0,
+        "order_flow": 12.5,
+        "derivatives": 9.0,
+        "execution": 6.5,
+        "cross_exchange": 7.14,
+    }
+
+
+def test_watch_score_survives_projection_for_watch_only_candidate():
+    projected = project_dashboard_candidate(_watch_candidate())
+    assert projected["metrics"]["watch_score"] == {
+        "score": 41.0,
+        "components": {"cascade": 10.0, "order_flow": 8.0},
+    }
+
+
+def test_score_v2_candidate_score_and_version_are_semantically_paired():
+    """Both outer score and metrics.score_version must survive for candidateRank() to accept the value."""
+    projected = project_dashboard_candidate(_score_v2_candidate())
+    assert projected["score"] == 53.14
+    assert projected["metrics"]["score_version"] == "score_v2"
+    assert projected["metrics"]["score"] == 53.14
+    assert projected["metrics"]["trade_eligible"] is True
+
+
+def test_score_version_not_fabricated_when_absent():
+    """Projection must not invent score_version when backend did not set it."""
+    projected = project_dashboard_candidate(_candidate())
+    assert "score_version" not in projected["metrics"]
+
+
+def test_watch_score_not_fabricated_when_absent():
+    projected = project_dashboard_candidate(_candidate())
+    assert "watch_score" not in projected["metrics"]
+
+
+def test_score_is_distinct_from_final_ranking():
+    """metrics.score must be the raw ScoreV2 value, not recomputed by projection."""
+    candidate = _score_v2_candidate()
+    candidate["metrics"]["score"] = 53.14
+    projected = project_dashboard_candidate(candidate)
+    assert projected["metrics"]["score"] == 53.14
+
+
+def test_poll_and_sse_projections_are_equivalent():
+    """project_dashboard_payload wraps project_dashboard_candidate; both paths must agree."""
+    candidate = _score_v2_candidate()
+    payload = {
+        "total": 1,
+        "candidates": {"TEST/USDT:USDT": candidate},
+        "decision_terminal": {},
+        "final_ranking": {},
+        "signal_funnel": {},
+    }
+    via_payload = project_dashboard_payload(payload)["candidates"]["TEST/USDT:USDT"]
+    via_direct = project_dashboard_candidate(candidate)
+    assert via_payload["metrics"]["score_version"] == via_direct["metrics"]["score_version"]
+    assert via_payload["metrics"]["score_components"] == via_direct["metrics"]["score_components"]
+
+
+def test_projection_size_bound_still_satisfied_with_score_metadata():
+    """Adding score metadata must not push the projected size past the 20% bound."""
+    import json
+    source = _score_v2_candidate()
+    raw_bytes = len(json.dumps(source, separators=(",", ":")).encode())
+    projected_bytes = len(
+        json.dumps(project_dashboard_candidate(source), separators=(",", ":")).encode()
+    )
+    assert projected_bytes < raw_bytes * 0.2
+
+
 def test_live_projection_preserves_bounded_observational_reference_plan():
     source = _candidate()
     source["metrics"]["technical_trade_plan_shadow"] = {
