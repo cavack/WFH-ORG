@@ -27,6 +27,7 @@ _DECISION_FIELDS = (
     "evaluated_at",
     "decision",
     "lifecycle_state",
+    "late_origin",
     "entry_readiness",
     "evidence_coverage_pct",
     "trade_plan",
