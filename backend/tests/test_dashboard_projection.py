@@ -86,6 +86,17 @@ def test_live_projection_preserves_decision_fields_without_raw_diagnostics():
     assert "execution_suitability" not in projected
 
 
+def test_late_origin_survives_projection_without_fabrication():
+    source = _candidate()
+    source["metrics"]["entry_decision"].update(
+        {"decision": "LATE", "late_origin": "ANTI_CHASE"}
+    )
+    assert project_dashboard_candidate(source)["metrics"]["entry_decision"]["late_origin"] == "ANTI_CHASE"
+
+    source["metrics"]["entry_decision"].pop("late_origin")
+    assert "late_origin" not in project_dashboard_candidate(source)["metrics"]["entry_decision"]
+
+
 def test_projection_is_bounded_relative_to_raw_candidate():
     source = _candidate()
     raw_bytes = len(json.dumps(source, separators=(",", ":")).encode())
