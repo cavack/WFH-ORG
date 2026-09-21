@@ -15,6 +15,6 @@ def test_runner_config_runs_from_runner_directory() -> None:
 def test_runner_online_gate_accepts_active_ephemeral_runner() -> None:
     text = PROVISIONER.read_text(encoding="utf-8")
     polling = text.split("online=0", maxsplit=1)[1].split("systemd-run", maxsplit=1)[0]
-    assert "runner_status=" in polling
+    assert 'runner_status="$(printf "%s\\n" "$state" | cut -f1)"' in polling
     assert 'if [[ "$runner_status" == "online" ]]; then' in polling
     assert "online\\tfalse" not in polling
