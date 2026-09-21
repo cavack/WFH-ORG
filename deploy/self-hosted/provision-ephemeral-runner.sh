@@ -187,16 +187,19 @@ registration_token="$(gh api --method POST "repos/${REPOSITORY}/actions/runners/
 runner_name="wfh-production-${TARGET_SHA:0:12}-${RUN_ID}-${run_attempt}"
 runner_registered=1
 
-runuser -u "$RUNNER_USER" -- "$RUNNER_DIR/config.sh" \
-  --url "https://github.com/${REPOSITORY}" \
-  --token "$registration_token" \
-  --name "$runner_name" \
-  --labels "$LABEL" \
-  --work _work \
-  --ephemeral \
-  --disableupdate \
-  --unattended \
-  --replace >/dev/null
+(
+  cd "$RUNNER_DIR"
+  runuser -u "$RUNNER_USER" -- ./config.sh \
+    --url "https://github.com/${REPOSITORY}" \
+    --token "$registration_token" \
+    --name "$runner_name" \
+    --labels "$LABEL" \
+    --work _work \
+    --ephemeral \
+    --disableupdate \
+    --unattended \
+    --replace >/dev/null
+)
 unset registration_token
 
 unit="wfh-production-runner-${runner_name#wfh-production-}"
@@ -215,7 +218,24 @@ online=0
 for _ in $(seq 1 30); do
   state="$(gh api "repos/${REPOSITORY}/actions/runners?per_page=100" \
     --jq ".runners[] | select(.name == \"${runner_name}\") | [.status,.busy] | @tsv" | head -n1 || true)"
-  if [[ "$state" == $'online\tfalse' ]]; then
+  runner_status="${state%%
+  sleep 2
+done
+[[ "$online" -eq 1 ]] || {
+  fail "ephemeral runner did not become online"
+}
+
+systemd-run \
+  --unit "${unit}-reaper" \
+  --on-active=61m \
+  --collect \
+  /usr/local/sbin/wfh-provision-production-runner --reap "$runner_name" >/dev/null
+
+trap - EXIT
+printf '[wfh-runner-provision] runner=%s unit=%s target_sha=%s label=%s\n' \
+  "$runner_name" "$unit" "$TARGET_SHA" "$LABEL"
+\t'*}"
+  if [[ "$runner_status" == "online" ]]; then
     online=1
     break
   fi
