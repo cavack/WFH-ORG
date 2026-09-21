@@ -218,23 +218,7 @@ online=0
 for _ in $(seq 1 30); do
   state="$(gh api "repos/${REPOSITORY}/actions/runners?per_page=100" \
     --jq ".runners[] | select(.name == \"${runner_name}\") | [.status,.busy] | @tsv" | head -n1 || true)"
-  runner_status="${state%%
-  sleep 2
-done
-[[ "$online" -eq 1 ]] || {
-  fail "ephemeral runner did not become online"
-}
-
-systemd-run \
-  --unit "${unit}-reaper" \
-  --on-active=61m \
-  --collect \
-  /usr/local/sbin/wfh-provision-production-runner --reap "$runner_name" >/dev/null
-
-trap - EXIT
-printf '[wfh-runner-provision] runner=%s unit=%s target_sha=%s label=%s\n' \
-  "$runner_name" "$unit" "$TARGET_SHA" "$LABEL"
-\t'*}"
+  runner_status="$(printf "%s\n" "$state" | cut -f1)"
   if [[ "$runner_status" == "online" ]]; then
     online=1
     break
