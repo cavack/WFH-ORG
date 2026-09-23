@@ -19,10 +19,53 @@ product's purpose.
 
 Policy module introduced on branch `feat/strict-provider-independent-v1`:
 `backend/src/waterfallhunter/core/strict_provider_independent.py` plus
-`backend/tests/test_strict_provider_independent.py`. Not yet wired into
-production scoring or validation. Integration into
-`multi_exchange_validator.py`, `scientific_validation.py`, and
-`feature_replay.py` is tracked as follow-up work below.
+`backend/tests/test_strict_provider_independent.py`.
+
+Hardened on branch `fix/reliability-hardening-20260923` (operator-facing
+grading plus fail-closed replay facts, covered by
+`backend/tests/test_provider_unavailable_fail_closed.py`):
+
+- Every result now carries an explicit `decision_grade`:
+  `DECISION_GRADE` only when **every** evaluated dependency was observed;
+  `RESEARCH_ONLY` whenever any dependency is `UNAVAILABLE` (mandatory or
+  optional); `UNAVAILABLE` when nothing was evaluated at all.
+- Every unavailable dependency reports a machine-readable
+  `reason_code`, defaulting to `PROVIDER_UNAVAILABLE` so a caller cannot
+  omit it and let the gap disappear from the operator's view.
+- `evaluate_provider_independence({})` now fails closed
+  (`NOT_ALERT_GRADE` / `UNAVAILABLE`) instead of reporting a clean
+  `ALERT_ELIGIBLE` result for an empty evidence set.
+- `feature_replay.py` no longer fabricates facts: a derivatives capture
+  with no usable `retrieved_at` is reported as `UNAVAILABLE` with reason
+  `PROVIDER_UNAVAILABLE` (previously epoch `0.0`), and a replay that cannot
+  resolve a positive reference price from captured data returns
+  `NOT_REPLAYABLE` / `REFERENCE_PRICE_UNAVAILABLE` (previously `0.0`).
+
+**Wired on `fix/reliability-hardening-20260923`** — report-only: the
+wiring attaches the explicit evaluation but never changes a scoring,
+gate, or terminal verdict by itself.
+
+- `entry_decision.build_entry_decision` attaches `provider_independence`
+  (outcome, `decision_grade`, evaluated/blocking/degraded features, human
+  reasons, machine reason codes) to every user-facing packet via
+  `provider_independence_from_metrics`; terminal transitions
+  (EXPIRED/INVALIDATED) carry the evaluation forward.
+- `multi_exchange_validator.cross_check_symbol` attaches the same
+  evaluation — one shared function, so stored candidate metrics and the
+  decision packet cannot disagree — right after candle, microstructure,
+  and derivatives facts are assembled.
+- `scientific_validation.validate_strict_scientific_evidence` accepts
+  declared `provider_dependencies`: a cohort whose only gap is OPTIONAL
+  (CoinGlass, Issue #20) stays eligible for validated review with the gap
+  recorded on the report; a MANDATORY gap — or an empty declared map —
+  fails review closed with
+  `PROVIDER_EVIDENCE_MANDATORY_FEATURE_UNAVAILABLE`. Callers that declare
+  nothing keep the pre-existing report shape byte-for-byte.
+
+Still **not** done: enforcement at alert-emission time, explicit
+dependency coverage for the derived scoring components (order_flow,
+cross_exchange, price_location, cascade), and the eligibility side of
+`feature_replay.py` payloads — all tracked as follow-up work below.
 
 ## Problem
 
@@ -96,6 +139,11 @@ classified `OPTIONAL` under `STRICT_PROVIDER_INDEPENDENT_V1`. This means:
    path. `LIVE_TRADING_ENABLED` remains mandatory and unrelated to this
    policy; the operator continues to execute manually on any alert they
    choose to act on.
+6. **Facts are never fabricated to look complete.** If a captured fact needed
+   to re-derive a decision (the reference price, or the capture timestamp that
+   ages derivatives evidence) is missing, replay reports the gap and stops
+   instead of substituting `0.0`. Zero is a real market value; it must never
+   mean "we did not capture this".
 
 ## Non-goals of this change
 
@@ -111,17 +159,50 @@ classified `OPTIONAL` under `STRICT_PROVIDER_INDEPENDENT_V1`. This means:
 
 ## Follow-up integration work (tracked, not yet implemented here)
 
-- Wire `evaluate_provider_independence` into `multi_exchange_validator.py`
-  wherever a `CoinGlassDerivativesClient` result is consumed, replacing any
-  implicit "missing means excluded" behavior with an explicit
-  `FeatureDependency`.
-- Extend `ScientificValidationPolicy` in `scientific_validation.py` so a
-  cohort whose CoinGlass dependency is `UNAVAILABLE` is still eligible for
-  validated review, while a cohort with a `MANDATORY` gap is not.
-- Extend replay payloads in `feature_replay.py` to carry the
-  `ProviderIndependenceResult` alongside the existing
-  `replay_unavailable_reason` handling, so replay parity checks (PR-2) can
-  assert eligibility-outcome parity, not just row-level idempotency.
+- ~~Wire `evaluate_provider_independence` into `multi_exchange_validator.py`~~
+  **Done** on `fix/reliability-hardening-20260923`: `cross_check_symbol`
+  attaches `provider_independence` (via the shared
+  `entry_decision.provider_independence_from_metrics`) to candidate metrics.
+- ~~Extend `ScientificValidationPolicy` in `scientific_validation.py`~~
+  **Done** on `fix/reliability-hardening-20260923`, as an optional
+  `provider_dependencies` argument on `validate_strict_scientific_evidence`
+  rather than a policy field — policy fields are hash-bound, and the gate
+  belongs to the cohort's evidence, not to the frozen policy. OPTIONAL gap →
+  still eligible for validated review (recorded); MANDATORY gap or empty
+  declared map → fails closed with
+  `PROVIDER_EVIDENCE_MANDATORY_FEATURE_UNAVAILABLE`.
+- Declare `provider_dependencies` at every real caller of
+  `validate_strict_scientific_evidence` (CLI, review pipeline) so the gate
+  is exercised in production rather than only where declared.
+- ~~Surface the decision grade on advisory/dashboard~~ **Done** on
+  `fix/reliability-hardening-20260923`: the SIGNAL_ONLY signal alert and
+  the ENTRY READY notification render an `⚠️ Evidence: <grade> ·
+  missing: …` line whenever the grade is not `DECISION_GRADE`, and both
+  dashboard projections (`dashboard.compact_metrics`,
+  `dashboard_projection.project_dashboard_candidate`) carry
+  `provider_independence` end-to-end (`dashboard_stream` already passes
+  nested decision dicts through untouched). Packets without the evaluation
+  project byte-identically — no fabricated fields on legacy rows.
+- Enforcement: stop *presenting* `UNAVAILABLE`/`NOT_ALERT_GRADE` results as
+  alert-grade (suppress or hard-mark the signal itself) — visibility has
+  landed, suppression is still open (ADV/UI findings).
+- Represent the derived scoring components (order_flow, cross_exchange,
+  price_location, cascade) as explicit `FeatureDependency` entries in
+  `provider_independence_from_metrics`, so coverage loss shows up in
+  `blocking_features`/`degraded_optional_features` instead of only in
+  `reason_codes` and `evidence_coverage_pct`.
+- ~~Extend replay payloads in `feature_replay.py` to carry the
+  `ProviderIndependenceResult`~~ **Done** on
+  `fix/reliability-hardening-20260923`: EQUIVALENT/MISMATCH packets carry
+  `provider_independence`, and the same evaluation joins the
+  production-vs-replay equivalence diff — both sides go through the shared
+  `provider_independence_from_metrics`, so a replay can never be
+  EQUIVALENT while grading its evidence differently than production did.
+  NOT_REPLAYABLE packets stay unchanged (no facts, no invented grade). The
+  results table keeps its fixed columns: the evaluation lands in
+  `differences_json` whenever it diverges and is deterministically
+  re-derivable from the snapshot otherwise; persisting it on every row
+  would need a migration and is tracked separately.
 - Surface `degraded_optional_features` and `blocking_features` on the
   operator-facing dashboard (PR-4) so the reason an alert is `ALERT_ELIGIBLE`
   with a gap, or `NOT_ALERT_GRADE`, is always visible next to the alert.

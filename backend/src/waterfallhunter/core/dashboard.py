@@ -46,6 +46,7 @@ def compact_metrics(
         "relative_weakness_features",
         "cascade_intelligence",
         "entry_decision",
+        "provider_independence",
     )
 
     result = {

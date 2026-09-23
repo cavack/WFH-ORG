@@ -254,3 +254,32 @@ def test_live_projection_preserves_bounded_observational_reference_plan():
     assert shadow["setup"]["take_profit_2"] == 0.8
     assert "raw_heavy_field" not in shadow["setup"]
     assert shadow["reference"] == {"price": 1.01, "source": "mark"}
+
+
+def test_provider_independence_grade_survives_projection() -> None:
+    independence = {
+        "policy_version": "STRICT_PROVIDER_INDEPENDENT_V1",
+        "outcome": "ALERT_ELIGIBLE",
+        "decision_grade": "RESEARCH_ONLY",
+        "evaluated_features": ["coinglass_derivatives"],
+        "blocking_features": [],
+        "degraded_optional_features": ["coinglass_derivatives"],
+        "reasons": ["coinglass_derivatives: plan quota exceeded"],
+        "reason_codes": ["coinglass_derivatives: PROVIDER_UNAVAILABLE"],
+    }
+    source = _candidate()
+    source["metrics"]["entry_decision"]["provider_independence"] = independence
+    source["metrics"]["provider_independence"] = independence
+
+    projected = project_dashboard_candidate(source)
+
+    assert (
+        projected["metrics"]["entry_decision"]["provider_independence"]
+        == independence
+    )
+    assert projected["metrics"]["provider_independence"] == independence
+
+    # Legacy packets without the wiring project byte-identically.
+    legacy = project_dashboard_candidate(_candidate())
+    assert "provider_independence" not in legacy["metrics"]["entry_decision"]
+    assert "provider_independence" not in legacy["metrics"]
