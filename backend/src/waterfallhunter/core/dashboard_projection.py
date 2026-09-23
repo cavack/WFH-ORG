@@ -33,6 +33,7 @@ _DECISION_FIELDS = (
     "trade_plan",
     "block_reasons",
     "reason_codes",
+    "provider_independence",
 )
 _AI_FIELDS = (
     "ai_status",
@@ -102,6 +103,10 @@ def project_dashboard_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         "leverage_advisory": _pick(live_leverage, _LEVERAGE_FIELDS),
         "ai_advisory": _pick(advisory, _AI_FIELDS),
     }
+    if "provider_independence" in metrics:
+        projected["metrics"]["provider_independence"] = deepcopy(
+            metrics["provider_independence"]
+        )
     if technical_shadow:
         shadow_projection = _pick(
             technical_shadow,
