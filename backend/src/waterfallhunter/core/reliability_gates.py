@@ -30,6 +30,7 @@ from typing import Sequence
 from pydantic import BaseModel, ConfigDict, Field
 
 from waterfallhunter.core.strict_provider_independent import (
+    DecisionGrade,
     EligibilityOutcome,
     ProviderIndependenceResult,
 )
@@ -135,6 +136,8 @@ class ReplayComparison(BaseModel):
 
     candidate_id: str = Field(min_length=1)
     parity: bool
+    original_decision_grade: DecisionGrade
+    replay_decision_grade: DecisionGrade
     mismatches: tuple[str, ...] = Field(default_factory=tuple)
 
 
@@ -146,13 +149,17 @@ def check_replay_parity(
 ) -> ReplayComparison:
     """Assert that a replayed decision reproduces the original's eligibility.
 
-    Compares ``outcome``, ``blocking_features``, and
-    ``degraded_optional_features`` between the original
+    Compares ``outcome``, ``decision_grade``, ``blocking_features``,
+    ``degraded_optional_features``, ``evaluated_features``, ``reasons``,
+    and ``reason_codes`` between the original
     :class:`ProviderIndependenceResult` (from PR-1's
     ``evaluate_provider_independence``) and a replay of the same inputs.
     Row-level idempotency (e.g. a stable ``snapshot_id``) is not sufficient
     on its own: this checks that the *decision itself* is reproducible, not
-    merely that storing it twice produces the same row.
+    merely that storing it twice produces the same row. The decision grade
+    and reason codes are compared as well, because an operator must not be
+    shown a different evidence grade or explanation on replay than the one
+    the decision actually ran under.
 
     Parameters
     ----------
@@ -168,10 +175,10 @@ def check_replay_parity(
     Returns
     -------
     ReplayComparison
-        ``parity`` is True only if outcome, blocking features, and
-        degraded optional features are all identical. ``mismatches``
-        lists every field that differs, so a reviewer can see exactly what
-        diverged.
+        ``parity`` is True only if outcome, decision grade, feature lists,
+        evaluated features, and reasons (human and machine-readable) are
+        all identical. ``mismatches`` lists every field that differs, so a
+        reviewer can see exactly what diverged.
     """
 
     mismatches: list[str] = []
@@ -179,6 +186,11 @@ def check_replay_parity(
     if original.outcome is not replay.outcome:
         mismatches.append(
             f"outcome: original={original.outcome.value} replay={replay.outcome.value}"
+        )
+    if original.decision_grade is not replay.decision_grade:
+        mismatches.append(
+            "decision_grade: original="
+            f"{original.decision_grade.value} replay={replay.decision_grade.value}"
         )
     if original.blocking_features != replay.blocking_features:
         mismatches.append(
@@ -190,10 +202,25 @@ def check_replay_parity(
             "degraded_optional_features: original="
             f"{original.degraded_optional_features} replay={replay.degraded_optional_features}"
         )
+    if original.evaluated_features != replay.evaluated_features:
+        mismatches.append(
+            "evaluated_features: original="
+            f"{original.evaluated_features} replay={replay.evaluated_features}"
+        )
+    if original.reasons != replay.reasons:
+        mismatches.append(
+            f"reasons: original={original.reasons} replay={replay.reasons}"
+        )
+    if original.reason_codes != replay.reason_codes:
+        mismatches.append(
+            f"reason_codes: original={original.reason_codes} replay={replay.reason_codes}"
+        )
 
     return ReplayComparison(
         candidate_id=candidate_id,
         parity=not mismatches,
+        original_decision_grade=original.decision_grade,
+        replay_decision_grade=replay.decision_grade,
         mismatches=tuple(mismatches),
     )
 
@@ -206,6 +233,7 @@ class ReleaseReadiness(BaseModel):
     ready: bool
     freshness: FreshnessSLOResult
     replay_mismatches: tuple[ReplayComparison, ...] = Field(default_factory=tuple)
+    decision_grade_blockers: tuple[str, ...] = Field(default_factory=tuple)
     reasons: tuple[str, ...] = Field(default_factory=tuple)
 
 
@@ -214,15 +242,20 @@ def evaluate_release_readiness(
     freshness: FreshnessSLOResult,
     replay_comparisons: Sequence[ReplayComparison],
 ) -> ReleaseReadiness:
-    """Combine the freshness SLO and replay-parity gates into one verdict.
+    """Combine the freshness SLO, replay-parity, and decision-grade gates.
 
-    A release is ``ready`` only if the freshness SLO passes AND every
-    replay comparison shows parity. This function does not evaluate
-    anything about CoinGlass or STRICT_PROVIDER_INDEPENDENT_V1 directly;
-    it consumes whatever :class:`ProviderIndependenceResult` values the
-    caller already computed for each candidate, keeping this module
-    focused on reliability (freshness, determinism), not evidence
-    completeness.
+    A release is ``ready`` only if all three hold:
+
+    1. the freshness SLO passes,
+    2. every replay comparison shows parity, and
+    3. no candidate's decision grade is ``UNAVAILABLE``.
+
+    Gate 3 is the fail-closed evidence floor: ``RESEARCH_ONLY`` (an optional
+    provider such as CoinGlass being down) never blocks a release, but a
+    candidate with no evaluated evidence at all does, because nothing about
+    its correctness can be claimed. The gates consume whatever
+    :class:`ProviderIndependenceResult` values the caller already computed
+    for each candidate.
     """
 
     reasons: list[str] = []
@@ -242,9 +275,28 @@ def evaluate_release_readiness(
             f"{', '.join(c.candidate_id for c in failing_replays)}"
         )
 
+    unavailable_candidates = tuple(
+        sorted(
+            {
+                comparison.candidate_id
+                for comparison in replay_comparisons
+                if comparison.original_decision_grade is DecisionGrade.UNAVAILABLE
+                or comparison.replay_decision_grade is DecisionGrade.UNAVAILABLE
+            }
+        )
+    )
+    if unavailable_candidates:
+        reasons.append(
+            "candidate(s) with decision_grade=UNAVAILABLE (no evaluated evidence): "
+            + ", ".join(unavailable_candidates)
+        )
+
     return ReleaseReadiness(
-        ready=freshness.slo_pass and not failing_replays,
+        ready=freshness.slo_pass
+        and not failing_replays
+        and not unavailable_candidates,
         freshness=freshness,
         replay_mismatches=failing_replays,
+        decision_grade_blockers=unavailable_candidates,
         reasons=tuple(reasons),
     )

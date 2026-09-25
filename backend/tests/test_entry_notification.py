@@ -581,3 +581,65 @@ def test_advisory_grace_failure_does_not_block_entry_delivery(tmp_path, monkeypa
     outcome = asyncio.run(worker.dispatch_once(now=created_at + 10))
     assert outcome is not None and outcome.state == "DELIVERED"
     assert len(transport.calls) == 1
+
+
+def test_entry_ready_message_surfaces_evidence_grade_and_gap() -> None:
+    packet = entry_packet()
+    packet["provider_independence"] = {
+        "policy_version": "STRICT_PROVIDER_INDEPENDENT_V1",
+        "outcome": "ALERT_ELIGIBLE",
+        "decision_grade": "RESEARCH_ONLY",
+        "evaluated_features": ["coinglass_derivatives"],
+        "blocking_features": [],
+        "degraded_optional_features": ["coinglass_derivatives"],
+        "reasons": ["coinglass_derivatives: plan quota exceeded"],
+        "reason_codes": ["coinglass_derivatives: PROVIDER_UNAVAILABLE"],
+    }
+    message = TelegramNotifier.build_entry_ready_message(
+        {
+            "contract_version": "entry_ready_notification_v1",
+            "symbol": "SXT/USDT:USDT",
+            "decision_packet": packet,
+        }
+    )
+
+    # The gap must be visible at a glance, next to the coverage number.
+    assert "RESEARCH ONLY" in message
+    assert "coinglass_derivatives" in message
+    coverage_at = message.find("Evidence coverage")
+    assert 0 < coverage_at < message.find("RESEARCH ONLY")
+
+
+def test_entry_ready_message_stays_clean_at_decision_grade() -> None:
+    packet = entry_packet()
+    packet["provider_independence"] = {
+        "policy_version": "STRICT_PROVIDER_INDEPENDENT_V1",
+        "outcome": "ALERT_ELIGIBLE",
+        "decision_grade": "DECISION_GRADE",
+        "evaluated_features": ["coinglass_derivatives"],
+        "blocking_features": [],
+        "degraded_optional_features": [],
+        "reasons": [],
+        "reason_codes": [],
+    }
+    message = TelegramNotifier.build_entry_ready_message(
+        {
+            "contract_version": "entry_ready_notification_v1",
+            "symbol": "SXT/USDT:USDT",
+            "decision_packet": packet,
+        }
+    )
+
+    assert "Evidence:" not in message
+
+
+def test_entry_ready_message_without_evaluation_is_unchanged() -> None:
+    message = TelegramNotifier.build_entry_ready_message(
+        {
+            "contract_version": "entry_ready_notification_v1",
+            "symbol": "SXT/USDT:USDT",
+            "decision_packet": entry_packet(),
+        }
+    )
+
+    assert "Evidence:" not in message
