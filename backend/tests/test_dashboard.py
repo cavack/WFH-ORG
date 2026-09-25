@@ -771,3 +771,25 @@ def test_compact_metrics_keeps_bounded_observational_reference_trade_plan():
         },
         "reference": {"price": 1.01, "source": "mark"},
     }
+
+
+def test_compact_metrics_preserves_provider_independence_grade() -> None:
+    # The stored candidate carries the STRICT grade; the dashboard wire must
+    # not silently drop it (operator has to see the gap at a glance).
+    independence = {
+        "policy_version": "STRICT_PROVIDER_INDEPENDENT_V1",
+        "outcome": "ALERT_ELIGIBLE",
+        "decision_grade": "RESEARCH_ONLY",
+        "evaluated_features": ["coinglass_derivatives"],
+        "blocking_features": [],
+        "degraded_optional_features": ["coinglass_derivatives"],
+        "reasons": ["coinglass_derivatives: plan quota exceeded"],
+        "reason_codes": ["coinglass_derivatives: PROVIDER_UNAVAILABLE"],
+    }
+    compacted = compact_metrics({"score": 77.0, "provider_independence": independence})
+
+    assert compacted["provider_independence"] == independence
+
+    # Absent stays absent: packets without the wiring stay byte-stable.
+    legacy = compact_metrics({"score": 77.0})
+    assert "provider_independence" not in legacy

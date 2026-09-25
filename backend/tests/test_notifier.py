@@ -27,3 +27,54 @@ def test_signal_message_reports_the_actual_fallback_provider():
         "metrics": {"ai_advisory": {"ai_provider": "ollama"}},
     })
     assert "AI advisory (ollama)" in message
+
+
+def test_signal_message_surfaces_provider_independence_gap() -> None:
+    # The SIGNAL_ONLY alert itself must carry the STRICT grade: the operator
+    # should see "missing derivatives context" without opening the dashboard.
+    message = TelegramNotifier.build_signal_message(
+        "PEPE/USDT:USDT",
+        {
+            "score": 88.5,
+            "metrics": {
+                "provider_independence": {
+                    "policy_version": "STRICT_PROVIDER_INDEPENDENT_V1",
+                    "outcome": "ALERT_ELIGIBLE",
+                    "decision_grade": "RESEARCH_ONLY",
+                    "evaluated_features": ["coinglass_derivatives"],
+                    "blocking_features": [],
+                    "degraded_optional_features": ["coinglass_derivatives"],
+                    "reasons": ["coinglass_derivatives: plan quota exceeded"],
+                    "reason_codes": [
+                        "coinglass_derivatives: PROVIDER_UNAVAILABLE"
+                    ],
+                },
+            },
+        },
+    )
+
+    assert "RESEARCH ONLY" in message
+    assert "coinglass_derivatives" in message
+
+
+def test_signal_message_stays_clean_without_a_gap() -> None:
+    message = TelegramNotifier.build_signal_message(
+        "PEPE/USDT:USDT",
+        {
+            "score": 88.5,
+            "metrics": {
+                "provider_independence": {
+                    "policy_version": "STRICT_PROVIDER_INDEPENDENT_V1",
+                    "outcome": "ALERT_ELIGIBLE",
+                    "decision_grade": "DECISION_GRADE",
+                    "evaluated_features": ["coinglass_derivatives"],
+                    "blocking_features": [],
+                    "degraded_optional_features": [],
+                    "reasons": [],
+                    "reason_codes": [],
+                },
+            },
+        },
+    )
+
+    assert "Evidence:" not in message

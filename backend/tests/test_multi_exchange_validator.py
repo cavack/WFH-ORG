@@ -577,6 +577,28 @@ async def test_cross_check_preserves_entry_decision_candle_contract(monkeypatch)
     assert "STRUCTURE_UNAVAILABLE" not in decision["reason_codes"]
     assert "TIMING_UNAVAILABLE" not in decision["reason_codes"]
 
+    # The validator attaches the explicit STRICT evaluation to the metrics
+    # packet itself, so stored candidates and dashboards carry the grade
+    # without recomputing it. This harness stubs derivatives unavailable
+    # (Issue #20 reality): OPTIONAL gap only — eligibility holds, grade
+    # drops, and the gap stays visible with a machine-readable code.
+    independence = result["metrics"]["provider_independence"]
+    assert independence["policy_version"] == "STRICT_PROVIDER_INDEPENDENT_V1"
+    assert independence["outcome"] == "ALERT_ELIGIBLE"
+    assert independence["decision_grade"] == "RESEARCH_ONLY"
+    assert independence["evaluated_features"] == [
+        "coinglass_derivatives",
+        "execution",
+        "microstructure",
+        "structure",
+        "timing",
+    ]
+    assert independence["blocking_features"] == []
+    assert independence["degraded_optional_features"] == ["coinglass_derivatives"]
+    assert (
+        "coinglass_derivatives: PROVIDER_UNAVAILABLE" in independence["reason_codes"]
+    )
+
 
 @pytest.mark.asyncio
 async def test_cross_check_rejects_bad_microstructure_before_fetching_candles():

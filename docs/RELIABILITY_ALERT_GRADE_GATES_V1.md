@@ -4,9 +4,22 @@
 
 Introduced on branch `feat/reliability-alert-grade-gates`:
 `backend/src/waterfallhunter/core/reliability_gates.py` plus
-`backend/tests/test_reliability_gates.py`. Not yet wired into the release
-pipeline, CI, or the production dashboard. Wiring is tracked as follow-up
-work below.
+`backend/tests/test_reliability_gates.py`.
+
+Hardened on branch `fix/reliability-hardening-20260923`:
+
+- `check_replay_parity()` now also compares `decision_grade`,
+  `evaluated_features`, `reasons`, and `reason_codes`, and records both
+  grades on the `ReplayComparison` so a reviewer sees which grade each side
+  produced.
+- `evaluate_release_readiness()` gained a third, fail-closed gate: a
+  release is not ready while any candidate's decision grade is
+  `UNAVAILABLE`. `RESEARCH_ONLY` (an optional provider such as CoinGlass
+  being down) never blocks a release; `UNAVAILABLE` (no evidence evaluated
+  at all) always does.
+
+Not yet wired into the release pipeline, CI, or the production dashboard.
+Wiring is tracked as follow-up work below.
 
 ## Relationship to existing freshness contract
 
@@ -28,29 +41,35 @@ over any window of `FreshnessSample` observations.
 `check_replay_parity()` consumes
 `waterfallhunter.core.strict_provider_independent.ProviderIndependenceResult`
 directly. It asserts that replaying a candidate's inputs produces the same
-`EligibilityOutcome`, the same `blocking_features`, and the same
-`degraded_optional_features` as the original decision. This is stricter
-than row-level idempotency (e.g. a stable `snapshot_id` in the existing
-feature-replay store): it checks that the *decision logic* is reproducible
-for the same inputs, not merely that storing the same row twice is a no-op.
+`EligibilityOutcome`, the same `DecisionGrade`, the same
+`blocking_features`, the same `degraded_optional_features`, the same
+`evaluated_features`, and the same `reasons` / `reason_codes` as the
+original decision. This is stricter than row-level idempotency (e.g. a
+stable `snapshot_id` in the existing feature-replay store): it checks that
+the *decision logic* is reproducible for the same inputs, not merely that
+storing the same row twice is a no-op — and that the operator is shown the
+same evidence grade and the same explanation both times.
 
 ## What "release-ready" means here
 
-`evaluate_release_readiness()` combines both gates:
+`evaluate_release_readiness()` combines three gates:
 
-- `ready = True` only if the freshness SLO passes (`p95 <= threshold`) AND
-  every supplied replay comparison shows parity.
+- `ready = True` only if the freshness SLO passes (`p95 <= threshold`),
+  every supplied replay comparison shows parity, AND no candidate's
+  decision grade is `UNAVAILABLE`.
 - Any breach produces an explicit, human-readable reason in `reasons`, and
-  breaching candidates are listed by ID in `breaching_candidate_ids` /
-  `replay_mismatches` so a reviewer can see exactly what failed and for
-  which candidate — not just an aggregate pass/fail flag.
+  failing candidates are listed by ID in `breaching_candidate_ids`,
+  `replay_mismatches`, or `decision_grade_blockers` so a reviewer can see
+  exactly what failed and for which candidate — not just an aggregate
+  pass/fail flag.
 
-This verdict is about **reliability** (is the pipeline fast and
-deterministic enough to trust its output), not about **evidence
-completeness** (whether a specific candidate has enough data to be
-alert-eligible, which is PR-1's concern) or about **release/DR
-certification** (whether the deployed artifact itself has been
-restore-tested, which is a separate PR-3 concern).
+The freshness and parity gates are about **reliability** (is the pipeline
+fast and deterministic enough to trust its output). The decision-grade gate
+borrows PR-1's `DecisionGrade` as an evidence floor: it only rejects
+`UNAVAILABLE`, so it decides nothing about evidence completeness itself
+(that remains PR-1's concern) and `RESEARCH_ONLY` candidates still pass.
+**Release/DR certification** — whether the deployed artifact itself has
+been restore-tested — remains a separate PR-3 concern.
 
 ## Hard rules
 
@@ -62,12 +81,19 @@ restore-tested, which is a separate PR-3 concern).
    because an average can hide a long tail of stale candidates that an
    operator would still see as delayed alerts.
 3. **Replay parity checks the decision, not just the row.** A `parity=True`
-   result requires outcome, blocking features, and degraded optional
-   features to all match exactly between the original and the replay.
+   result requires outcome, decision grade, blocking features, degraded
+   optional features, evaluated features, and both reason collections
+   (human-readable and machine-readable) to all match exactly between the
+   original and the replay.
 4. **This module has no side effects.** It performs no I/O, database
    access, or provider calls. It cannot create, modify, or enable any
    order-placement or automated-execution path. `LIVE_TRADING_ENABLED` and
    SIGNAL_ONLY are unrelated to and unaffected by this module.
+5. **`UNAVAILABLE` blocks release; `RESEARCH_ONLY` does not.** An optional
+   provider being down degrades candidates to `RESEARCH_ONLY` and the
+   release still proceeds — that is the documented STRICT policy. But a
+   candidate with `decision_grade=UNAVAILABLE` has zero evaluated evidence,
+   so readiness fails closed rather than releasing on nothing.
 
 ## Non-goals of this change
 
