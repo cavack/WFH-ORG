@@ -9,6 +9,7 @@ from waterfallhunter.core.candle_analyzer import MultiTimeframeAnalyzer
 from waterfallhunter.core.cascade_intelligence import build_cascade_evidence
 from waterfallhunter.core.coinglass import CoinGlassDerivativesClient
 from waterfallhunter.core.derivatives import DerivativesAnalyzer
+from waterfallhunter.core.entry_decision import provider_independence_from_metrics
 from waterfallhunter.core.microstructure import MicrostructureAnalyzer
 from waterfallhunter.core.multi_exchange import MultiExchangeGateway
 from waterfallhunter.core.position_calculator import PositionCalculator
@@ -2463,6 +2464,15 @@ class MultiExchangeValidator:
                 ) is True
             )
         }
+
+        # STRICT_PROVIDER_INDEPENDENT_V1 (PR-1): record the explicit
+        # eligibility outcome and decision grade on the packet itself while
+        # every dependency fact (candles, microstructure, derivatives) is
+        # already assembled. Report-only — scoring and status transitions
+        # below do not read this field, so wiring cannot change a verdict.
+        metrics["provider_independence"] = (
+            provider_independence_from_metrics(metrics)
+        )
 
         if benchmark.get(
             "available"

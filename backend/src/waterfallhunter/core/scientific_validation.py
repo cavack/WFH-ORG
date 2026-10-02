@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections import Counter
+from collections import Counter, abc
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
 from waterfallhunter.core.signal_metadata import canonical_sha256
+from waterfallhunter.core.strict_provider_independent import (
+    EligibilityOutcome,
+    FeatureDependency,
+    evaluate_provider_independence,
+)
 
 
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -198,6 +203,7 @@ def validate_strict_scientific_evidence(
     request: ScientificValidationRequest | dict[str, Any],
     *,
     policy: ScientificValidationPolicy | None = None,
+    provider_dependencies: abc.Mapping[str, FeatureDependency] | None = None,
 ) -> dict[str, Any]:
     packet = (
         request
@@ -213,6 +219,17 @@ def validate_strict_scientific_evidence(
     walk_forward = _walk_forward(split["development"], active_policy)
     reasons.extend(walk_forward["blocking_reasons"])
 
+    # STRICT_PROVIDER_INDEPENDENT_V1 (PR-1): when the caller declares the
+    # cohort's provider dependencies, record the explicit evaluation on the
+    # report. An OPTIONAL gap (CoinGlass under Issue #20) only degrades the
+    # grade to RESEARCH_ONLY and never blocks validated review; a MANDATORY
+    # gap — or an empty declared map — fails review closed. Callers that
+    # declare nothing keep the pre-existing report shape unchanged.
+    if provider_dependencies is not None:
+        independence = evaluate_provider_independence(provider_dependencies)
+        if independence.outcome is not EligibilityOutcome.ALERT_ELIGIBLE:
+            reasons.append("PROVIDER_EVIDENCE_MANDATORY_FEATURE_UNAVAILABLE")
+
     result: dict[str, Any] = {
         "contract_version": "strict_scientific_validation_report_v1",
         "execution_mode": "SIGNAL_ONLY",
@@ -226,6 +243,8 @@ def validate_strict_scientific_evidence(
         "promotion_allowed": False,
         "feature_promotion_approval_required": True,
     }
+    if provider_dependencies is not None:
+        result["provider_independence"] = independence.model_dump(mode="json")
     if reasons:
         result.update(
             {
