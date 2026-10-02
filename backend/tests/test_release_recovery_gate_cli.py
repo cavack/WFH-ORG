@@ -12,6 +12,7 @@ def _run_cli(
     *,
     status: str,
     include_rehearsal: bool = True,
+    dr_repository: str = "cavack/WFH-ORG-dr",
 ) -> tuple[int, dict, dict]:
     production_db = tmp_path / "production.db"
     production_db.write_bytes(b"sqlite-placeholder")
@@ -19,7 +20,7 @@ def _run_cli(
     restore_path = tmp_path / "independent-restore-verification.json"
     rehearsal_path = tmp_path / "migration-rehearsal.json"
     report_path = tmp_path / "recovery-report.json"
-    backup = {"certification_sha256": "b" * 64}
+    backup = {"certification_sha256": "b" * 64, "remote_repository": dr_repository}
     restore = {"verification_report_sha256": "c" * 64}
     rehearsal = {"rehearsal_sha256": "d" * 64}
     backup_path.write_text(json.dumps(backup), encoding="utf-8")
@@ -127,3 +128,13 @@ def test_load_object_rejects_noncanonical_path_before_read(monkeypatch) -> None:
     else:
         raise AssertionError("relative evidence path was accepted")
     assert touched is False
+
+
+def test_recovery_gate_rejects_legacy_dr_evidence(tmp_path, monkeypatch):
+    import pytest
+
+    with pytest.raises(SystemExit) as error:
+        _run_cli(tmp_path, monkeypatch, status="READY_FOR_EXPLICIT_DISPATCH",
+                 dr_repository="cavack/wfh-dr")
+    assert error.value.code == 2
+    assert not (tmp_path / "recovery-report.json").exists()

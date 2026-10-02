@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+EXPECTED_REPOSITORY="cavack/WFH-ORG"
+
 WFH_DEPLOY_ROOT="${WFH_DEPLOY_ROOT:-/srv/waterfallhunter/app}"
 WFH_HOST_ROOT="${WFH_HOST_ROOT:-/srv/waterfallhunter}"
 WFH_DEPLOY_SHA="${WFH_DEPLOY_SHA:-}"
@@ -804,6 +806,16 @@ require_command curl
 [[ "$WFH_DEPLOY_BACKUP_RETENTION_COUNT" =~ ^[1-9][0-9]*$ ]] || fail "WFH_DEPLOY_BACKUP_RETENTION_COUNT must be a positive integer"
 
 cd "$WFH_DEPLOY_ROOT"
+# Reject repository mixing before creating state or fetching/checkout.
+git rev-parse --show-toplevel
+git remote get-url origin
+git branch --show-current
+git rev-parse HEAD
+git status --porcelain=v2
+[[ "$(git remote get-url origin)" == "https://github.com/${EXPECTED_REPOSITORY}.git" ]] || {
+  log "ERROR: deployment repository identity mismatch"
+  exit 1
+}
 export WFH_ENV_FILE="$ENV_FILE"
 export COMPOSE_PROJECT_NAME="waterfallhunter"
 install -d -m 0750 "$STATE_DIR" "$BACKUP_DIR"

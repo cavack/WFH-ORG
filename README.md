@@ -24,6 +24,25 @@
 > [!CAUTION]
 > This repository is research software, not financial advice. `entry_readiness` is a versioned evidence score—not a probability, promise, or expected return.
 
+## Current operational status — 2026-09-09
+
+This repository is now documented as a **finalization handoff**, not as a claim that every deferred production concern has been closed.
+
+| Surface | Finalization snapshot |
+| --- | --- |
+| Production application revision | `e06d874797d936dd134655b606aab5f22ea221ac` |
+| Release state | `DEPLOYED_UNVERIFIED` — post-deploy soak and current-state schema-10 DR certification remain pending ([#19](https://github.com/cavack/WFH-ORG/issues/19)) |
+| Database | schema `10`; `quick_check=ok`; `0` foreign-key violations |
+| Runtime | backend/frontend/watchdog/Prometheus/Grafana healthy; restart count `0`; `OOMKilled=false` in the finalization checks |
+| Backtest Lab | HMAC-backed Production bundle and authenticated replay verified operational |
+| Gemini | configured model `gemini-flash-lite-latest`; direct provider probe succeeded; advisory-only |
+| CoinGlass | optional derivatives packet `UNAVAILABLE` under the current provider plan ([#20](https://github.com/cavack/WFH-ORG/issues/20)) |
+| Telegram | credentials validated; signal delivery intentionally disabled; no cutover configured ([#21](https://github.com/cavack/WFH-ORG/issues/21)) |
+| Decision snapshot | `173` candidates: `108 LATE`, `65 NO_TRADE`, `0 ENTRY_READY`, `0 FORMING`, `0 ACTIVE` ([#22](https://github.com/cavack/WFH-ORG/issues/22)) |
+| Safety | `LIVE_TRADING_ENABLED=false`; no live order placement |
+
+The authoritative return point is [Current Status](docs/CURRENT_STATUS.md). The latest Git `main` may contain documentation-only commits newer than the deployed application revision; documentation movement is not a Production deployment.
+
 ## Contents
 
 - [At a glance](#at-a-glance)
@@ -103,7 +122,7 @@ Lifecycle `TRIGGERED` does not mean `ENTRY_READY`. An immutable entry event cann
 
 ### Protected calibration and pending Anti-Chase correction
 
-The protected `entry_policy_v1` bands are `ENTRY_READY >= 78` and `FORMING >= 55`; lower readiness remains `NO_TRADE`. Anti-Chase uses a `1.2 ATR` hard-extension boundary. The canonical Anti-Chase ordering from [#102](https://github.com/cavack/wfh/pull/102) is merged and present in current Production lineage: freshness and deterministic invalidators are evaluated first, and Anti-Chase only converts an otherwise `FORMING`, `ENTRY_READY`, or `ACTIVE` decision to `LATE`. Anti-Chase does not turn sub-`FORMING` evidence into `LATE`, lower either readiness threshold, or manufacture missing evidence. Genuine lifecycle `EXHAUSTED` remains explicitly terminal `LATE`, including when other blockers apply. New `LATE` packets record `late_origin` provenance while `lifecycle_state` continues to reflect the current evaluation.
+The protected `entry_policy_v1` bands are `ENTRY_READY >= 78` and `FORMING >= 55`; lower readiness remains `NO_TRADE`. Anti-Chase uses a `1.2 ATR` hard-extension boundary. The canonical Anti-Chase ordering recorded in [Model Change Ledger](docs/MODEL_CHANGELOG.md) is present in the deployed Production lineage: freshness and deterministic invalidators are evaluated first, and Anti-Chase only converts an otherwise `FORMING`, `ENTRY_READY`, or `ACTIVE` decision to `LATE`. Anti-Chase does not turn sub-`FORMING` evidence into `LATE`, lower either readiness threshold, or manufacture missing evidence. Genuine lifecycle `EXHAUSTED` remains explicitly terminal `LATE`, including when other blockers apply. New `LATE` packets record `late_origin` provenance while `lifecycle_state` continues to reflect the current evaluation.
 
 Read the full contracts in [Decision Engine](docs/DECISION_ENGINE.md), [Model](docs/MODEL.md), and [Dashboard](docs/DASHBOARD.md).
 
@@ -111,27 +130,46 @@ Read the full contracts in [Decision Engine](docs/DECISION_ENGINE.md), [Model](d
 
 ```mermaid
 flowchart LR
-    subgraph Evidence[Market and evidence inputs]
-        L[LBank catalogue and market data]
-        X[Cross-exchange evidence]
-        C[Optional Coinglass data]
-        D[Optional DEX/on-chain context]
+    O["Browser / operator"] --> N["nginx public edge"]
+    N --> F["Next.js Decision Terminal"]
+    F -->|"/dashboard/api/* + SSE"| B["FastAPI backend"]
+
+    subgraph EVIDENCE["Market and evidence inputs"]
+        L["LBank canonical catalogue + market data"]
+        X["Cross-exchange CCXT evidence"]
+        C["CoinGlass optional derivatives evidence"]
+        D["DEX / on-chain optional context"]
+        G["Gemini optional advisory"]
     end
 
-    L --> N[Discovery and normalization]
-    X --> N
-    C --> N
-    D --> N
-    N --> P[Canonical evidence packet]
-    P --> W[Cascade intelligence]
-    W --> E[Canonical entry decision]
-    E --> S[(Managed SQLite store)]
-    S --> U[Decision Terminal]
-    S --> T[Durable Telegram outbox]
-    S --> R[Replay, outcomes, and validation]
-    E --> M[Prometheus metrics]
-    M --> G[Grafana and Alertmanager]
-    A[Optional Gemini advisory] -. advisory only .-> U
+    L --> B
+    X --> B
+    C -.-> B
+    D -.-> B
+    G -.-> B
+
+    B --> S[("Managed SQLite schema 10")]
+    S --> H["Canonical decisions / outcomes / replay"]
+    H --> R["Backtest Lab — signed, read-only"]
+    S --> Q["Durable notification outbox"]
+    Q -.-> T["Telegram — disabled until release cutover"]
+
+    B --> P["Prometheus"]
+    P --> GR["Grafana"]
+    P --> A["Alertmanager"]
+    W["Watchdog"] --> B
+    W --> A
+
+    SD["systemd bounded recovery"] --> DC["Docker Compose"]
+    DC --> F
+    DC --> B
+    DC --> W
+    DC --> P
+    DC --> GR
+    DC --> A
+
+    B --> SAFE["SIGNAL_ONLY boundary"]
+    SAFE --> LT["LIVE_TRADING_ENABLED=false"]
 ```
 
 Runtime topology:
@@ -413,6 +451,7 @@ Healthy endpoints do not by themselves prove decision correctness, backup validi
 
 | Topic | Canonical document |
 | --- | --- |
+| Current production/finalization status | [Current Status](docs/CURRENT_STATUS.md) |
 | New developer or AI-session handoff | [Project Handoff](docs/PROJECT_HANDOFF.md) |
 | Runtime topology and data flow | [Architecture](docs/ARCHITECTURE.md) |
 | Market and evidence rules | [Model](docs/MODEL.md) |
