@@ -369,6 +369,31 @@ class TelegramNotifier:
         return f"{value:.{digits}f}"
 
     @classmethod
+    def _evidence_grade_line(cls, independence) -> str | None:
+        """Operator-facing STRICT evidence-grade line, or None when clean.
+
+        DECISION_GRADE packets carry no line (no noise on a clean alert);
+        RESEARCH_ONLY / UNAVAILABLE packets state the grade and the exact
+        features missing so the gap is visible at a glance — never hidden.
+        """
+        if not isinstance(independence, dict):
+            return None
+        grade = str(independence.get("decision_grade") or "")
+        if not grade or grade == "DECISION_GRADE":
+            return None
+        gaps = [
+            str(name)
+            for name in (
+                *list(independence.get("blocking_features") or []),
+                *list(independence.get("degraded_optional_features") or []),
+            )
+        ]
+        line = f"⚠️ Evidence: <b>{escape(grade.replace('_', ' '))}</b>"
+        if gaps:
+            line += " · missing: " + escape(", ".join(gaps))
+        return line
+
+    @classmethod
     def build_signal_message(cls, symbol: str, data: dict) -> str:
         metrics = data.get("metrics") or {}
         pos_setup = metrics.get("position_setup") or {}
@@ -401,6 +426,11 @@ class TelegramNotifier:
             f"📐 Reward:risk: <b>{cls._number(pos_setup.get('reward_to_risk'), 2)}</b>",
             f"📚 Spread / slippage: <b>{cls._number(microstructure.get('spread_pct'), 3)}%</b> / <b>{cls._number(microstructure.get('slippage_pct'), 3)}%</b>",
         ]
+        grade_line = cls._evidence_grade_line(
+            metrics.get("provider_independence")
+        )
+        if grade_line:
+            lines.insert(4, grade_line)
         if dex_context:
             lines.append(
                 f"🔗 DEX: {escape(str(dex_context.get('chain_id', '—')))} · liquidity ${cls._number(dex_context.get('liquidity_usd'), 0)}"
@@ -461,6 +491,9 @@ class TelegramNotifier:
             f"🔻 Taker B/S: <b>{cls._number(flow.get('taker_buy_sell_ratio'), 3)}</b> · Sell share: <b>{cls._number(flow.get('sell_share_pct'), 1)}%</b>",
             f"💥 Cascade: <b>{escape(str(cascade.get('status') or 'UNAVAILABLE'))}</b> · {cls._number(cascade.get('readiness_points'), 1)}/10",
         ]
+        grade_line = cls._evidence_grade_line(packet.get("provider_independence"))
+        if grade_line:
+            lines.insert(4, grade_line)
         advisory = payload.get("ai_advisory") if isinstance(payload.get("ai_advisory"), dict) else {}
         if advisory.get("ai_status") == "AVAILABLE":
             lines.append(
