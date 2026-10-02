@@ -79,6 +79,7 @@ Protected calibration remains unchanged unless separately scientifically validat
 3. [#21 — Operations debt: Telegram signal delivery cutover is intentionally disabled](https://github.com/cavack/WFH-ORG/issues/21)
 4. [#22 — Research follow-up: explain zero actionable signal yield without loosening protected calibration](https://github.com/cavack/WFH-ORG/issues/22)
 5. [#24 — CI tooling debt: GitHub agentic security check fails because the requested Copilot model is unsupported](https://github.com/cavack/WFH-ORG/issues/24)
+6. [#26 — Analysis debt: reconcile SonarCloud main-branch new-code baseline reporting 358 issues](https://github.com/cavack/WFH-ORG/issues/26)
 
 At this snapshot there were also 10 open Dependabot maintenance PRs. They are maintenance backlog, not evidence that the deployed application is currently broken.
 
@@ -86,6 +87,7 @@ At this snapshot there were also 10 open Dependabot maintenance PRs. They are ma
 
 - `VERIFIED_FACT`: PR #23 passed all five required branch-protection checks (`backend`, `frontend`, `container-validation`, `dependency-audit`, `repository-hygiene`), plus SonarCloud and CodeQL.
 - `VERIFIED_FACT`: the separate optional `github-advanced-security` agentic job failed before producing a repository finding because its GitHub/Copilot runtime requested an unsupported model. This is tracked as CI tooling `DEBT` in [#24](https://github.com/cavack/WFH-ORG/issues/24), not as a WaterfallHunter product security defect.
+- `VERIFIED_FACT`: after merge, SonarCloud's `main` Quality Gate passed but its branch summary reported `358 New issues` while the exact PR #25 analysis reported `0 New issues`. This discrepancy is tracked as analysis `DEBT` in [#26](https://github.com/cavack/WFH-ORG/issues/26); it is not being attributed to the documentation-only finalization change without baseline reconciliation.
 
 ## Historical incident records
 
