@@ -154,6 +154,10 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
   const reasons = Array.isArray(decision.reason_codes)
     ? decision.reason_codes.filter((value): value is string => typeof value === "string").slice(0, 8)
     : [];
+  const lateOrigin = state === "LATE" && (
+    decision.late_origin === "ANTI_CHASE"
+    || decision.late_origin === "LIFECYCLE_EXHAUSTED"
+  ) ? decision.late_origin : undefined;
   const readinessText = !evidenceUnavailable && readiness !== undefined
     ? readiness.toFixed(1)
     : "—";
@@ -181,6 +185,13 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
           </div>
         )}
         <EvidenceGrid evidence={evidence} />
+        {lateOrigin ? (
+          <p className="mt-4 text-xs font-medium text-orange-200">
+            {lateOrigin === "ANTI_CHASE"
+              ? "Late due to Anti-Chase · do not chase."
+              : "Late due to lifecycle exhaustion · do not chase."}
+          </p>
+        ) : null}
         {blocks.length > 0 ? (
           <div className="mt-4 flex gap-2 rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
             <ShieldAlert size={15} className="shrink-0" />

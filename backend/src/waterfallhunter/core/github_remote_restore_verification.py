@@ -21,10 +21,23 @@ from waterfallhunter.core.signal_metadata import canonical_sha256
 
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-_WORKFLOW_PATH = ".github/workflows/restore.yml"
-_TRUSTED_WORKFLOW_REVISIONS = {
-    "cavack/WFH-ORG-dr": "66d966ffe2053da2665612938b17c78f8ba05ba9",
-    "cavack/wfh-dr": "add3f01cf3b9f3e55d735294dae99d5a5792b5c2",
+_LEGACY_WORKFLOW_PATH = ".github/workflows/restore.yml"
+_CANONICAL_WORKFLOW_PATH = ".github/workflows/dr-restore-v2.yml"
+_TRUSTED_WORKFLOWS = {
+    "cavack/WFH-ORG-dr": {
+        "contract_version": "github_actions_remote_restore_verification_v2",
+        "name": "WFH Canonical DR Restore v2",
+        "path": _CANONICAL_WORKFLOW_PATH,
+        "revision": "97da01991cd5f8f5ad56239d75a3602f15ad05f9",
+        "artifact_identity": "run_id",
+    },
+    "cavack/wfh-dr": {
+        "contract_version": "github_actions_remote_restore_verification_v1",
+        "name": "Verify or restore encrypted DR backup",
+        "path": _LEGACY_WORKFLOW_PATH,
+        "revision": "add3f01cf3b9f3e55d735294dae99d5a5792b5c2",
+        "artifact_identity": "release_tag",
+    },
 }
 
 
@@ -35,13 +48,17 @@ class TrustedIndependentRestoreVerificationError(RuntimeError):
 class TrustedIndependentRestoreVerification(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    contract_version: Literal["github_actions_remote_restore_verification_v1"] = (
-        "github_actions_remote_restore_verification_v1"
-    )
+    contract_version: Literal[
+        "github_actions_remote_restore_verification_v1",
+        "github_actions_remote_restore_verification_v2",
+    ]
     github_host: Literal["github.com"]
     repository: str = Field(min_length=3)
     run_id: int = Field(ge=1, strict=True)
-    workflow_path: Literal[".github/workflows/restore.yml"]
+    workflow_path: Literal[
+        ".github/workflows/restore.yml",
+        ".github/workflows/dr-restore-v2.yml",
+    ]
     workflow_revision: str = Field(min_length=40, max_length=40)
     release_tag: str = Field(min_length=1)
     artifact_id: int = Field(ge=1, strict=True)
@@ -59,7 +76,20 @@ class TrustedIndependentRestoreVerification(BaseModel):
             raise ValueError("independent restore repository invalid")
         if any(character not in "0123456789abcdef" for character in self.workflow_revision):
             raise ValueError("independent restore workflow revision invalid")
-        if self.artifact_name != f"restore-verification-{self.release_tag}":
+        identity = _TRUSTED_WORKFLOWS.get(self.repository)
+        if identity is None:
+            raise ValueError("independent restore workflow identity not trusted")
+        if (
+            self.contract_version != identity["contract_version"]
+            or self.workflow_path != identity["path"]
+        ):
+            raise ValueError("independent restore workflow identity invalid")
+        expected_artifact_name = (
+            f"restore-verification-{self.run_id}"
+            if identity["artifact_identity"] == "run_id"
+            else f"restore-verification-{self.release_tag}"
+        )
+        if self.artifact_name != expected_artifact_name:
             raise ValueError("independent restore artifact identity invalid")
         material = self.model_dump(mode="python")
         expected = material.pop("verification_report_sha256")
@@ -68,14 +98,18 @@ class TrustedIndependentRestoreVerification(BaseModel):
         return self
 
 
-def trusted_independent_restore_workflow_revision(repository: str) -> str:
-    """Return the reviewed DR workflow revision trusted for one repository."""
-    revision = _TRUSTED_WORKFLOW_REVISIONS.get(repository)
-    if revision is None:
+def _trusted_independent_restore_workflow(repository: str) -> dict[str, str]:
+    identity = _TRUSTED_WORKFLOWS.get(repository)
+    if identity is None:
         raise TrustedIndependentRestoreVerificationError(
             "INDEPENDENT_RESTORE_WORKFLOW_IDENTITY_NOT_TRUSTED"
         )
-    return revision
+    return identity
+
+
+def trusted_independent_restore_workflow_revision(repository: str) -> str:
+    """Return the reviewed DR workflow revision trusted for one repository."""
+    return _trusted_independent_restore_workflow(repository)["revision"]
 
 
 def _trusted_gh_executable() -> str:
@@ -205,13 +239,14 @@ def resolve_github_independent_restore_verification(
             "INDEPENDENT_RESTORE_REQUEST_INVALID"
         )
 
-    trusted_workflow_revision = trusted_independent_restore_workflow_revision(repository)
+    trusted_workflow = _trusted_independent_restore_workflow(repository)
+    trusted_workflow_revision = trusted_workflow["revision"]
     run = _gh_json(f"repos/{repository}/actions/runs/{run_id}")
     workflow_revision = run.get("head_sha")
     if (
         run.get("id") != run_id
-        or run.get("name") != "Verify or restore encrypted DR backup"
-        or run.get("path") != _WORKFLOW_PATH
+        or run.get("name") != trusted_workflow["name"]
+        or run.get("path") != trusted_workflow["path"]
         or run.get("head_branch") != "main"
         or run.get("event") != "workflow_dispatch"
         or run.get("status") != "completed"
@@ -229,7 +264,11 @@ def resolve_github_independent_restore_verification(
             "INDEPENDENT_RESTORE_WORKFLOW_REVISION_NOT_TRUSTED"
         )
 
-    artifact_name = f"restore-verification-{release_tag}"
+    artifact_name = (
+        f"restore-verification-{run_id}"
+        if trusted_workflow["artifact_identity"] == "run_id"
+        else f"restore-verification-{release_tag}"
+    )
     artifact_payload = _gh_json(f"repos/{repository}/actions/runs/{run_id}/artifacts")
     artifacts = artifact_payload.get("artifacts")
     if not isinstance(artifacts, list) or len(artifacts) != 1:
@@ -273,11 +312,11 @@ def resolve_github_independent_restore_verification(
         )
 
     body = {
-        "contract_version": "github_actions_remote_restore_verification_v1",
+        "contract_version": trusted_workflow["contract_version"],
         "github_host": "github.com",
         "repository": repository,
         "run_id": run_id,
-        "workflow_path": _WORKFLOW_PATH,
+        "workflow_path": trusted_workflow["path"],
         "workflow_revision": workflow_revision,
         "release_tag": release_tag,
         "artifact_id": artifact_id,

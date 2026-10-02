@@ -5,27 +5,50 @@ import pytest
 import waterfallhunter.core.github_remote_restore_verification as verifier
 
 
-@pytest.mark.parametrize("repository, revision", [
-    ("cavack/wfh-dr", "add3f01cf3b9f3e55d735294dae99d5a5792b5c2"),
-    ("cavack/WFH-ORG-dr", "66d966ffe2053da2665612938b17c78f8ba05ba9"),
-])
+@pytest.mark.parametrize(
+    "repository, revision, workflow_name, workflow_path, artifact_name, contract_version",
+    [
+        (
+            "cavack/wfh-dr",
+            "add3f01cf3b9f3e55d735294dae99d5a5792b5c2",
+            "Verify or restore encrypted DR backup",
+            ".github/workflows/restore.yml",
+            "restore-verification-wfh-dr-test",
+            "github_actions_remote_restore_verification_v1",
+        ),
+        (
+            "cavack/WFH-ORG-dr",
+            "97da01991cd5f8f5ad56239d75a3602f15ad05f9",
+            "WFH Canonical DR Restore v2",
+            ".github/workflows/dr-restore-v2.yml",
+            "restore-verification-123",
+            "github_actions_remote_restore_verification_v2",
+        ),
+    ],
+)
 def test_independent_restore_verification_binds_exact_run_artifact_and_restore(
-    monkeypatch: pytest.MonkeyPatch, repository: str, revision: str,
+    monkeypatch: pytest.MonkeyPatch,
+    repository: str,
+    revision: str,
+    workflow_name: str,
+    workflow_path: str,
+    artifact_name: str,
+    contract_version: str,
 ) -> None:
     def fake_gh_json(endpoint: str) -> dict:
         if endpoint.endswith("/artifacts"):
             return {
                 "artifacts": [{
                     "id": 456,
-                    "name": "restore-verification-wfh-dr-test",
+                    "name": artifact_name,
                     "expired": False,
                     "digest": "sha256:" + "b" * 64,
                 }]
             }
         return {
             "id": 123,
-            "name": "Verify or restore encrypted DR backup",
-            "path": ".github/workflows/restore.yml",
+            "name": workflow_name,
+            "path": workflow_path,
             "head_branch": "main",
             "head_sha": revision,
             "event": "workflow_dispatch",
@@ -56,8 +79,11 @@ def test_independent_restore_verification_binds_exact_run_artifact_and_restore(
     )
 
     assert result.github_host == "github.com"
+    assert result.contract_version == contract_version
+    assert result.workflow_path == workflow_path
     assert result.workflow_revision == revision
     assert result.artifact_id == 456
+    assert result.artifact_name == artifact_name
     assert result.restore_file_sha256 == "c" * 64
     assert len(result.verification_report_sha256) == 64
 
