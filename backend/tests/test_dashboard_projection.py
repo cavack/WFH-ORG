@@ -86,6 +86,17 @@ def test_live_projection_preserves_decision_fields_without_raw_diagnostics():
     assert "execution_suitability" not in projected
 
 
+def test_late_origin_survives_projection_without_fabrication():
+    source = _candidate()
+    source["metrics"]["entry_decision"].update(
+        {"decision": "LATE", "late_origin": "ANTI_CHASE"}
+    )
+    assert project_dashboard_candidate(source)["metrics"]["entry_decision"]["late_origin"] == "ANTI_CHASE"
+
+    source["metrics"]["entry_decision"].pop("late_origin")
+    assert "late_origin" not in project_dashboard_candidate(source)["metrics"]["entry_decision"]
+
+
 def test_projection_is_bounded_relative_to_raw_candidate():
     source = _candidate()
     raw_bytes = len(json.dumps(source, separators=(",", ":")).encode())
@@ -243,3 +254,32 @@ def test_live_projection_preserves_bounded_observational_reference_plan():
     assert shadow["setup"]["take_profit_2"] == 0.8
     assert "raw_heavy_field" not in shadow["setup"]
     assert shadow["reference"] == {"price": 1.01, "source": "mark"}
+
+
+def test_provider_independence_grade_survives_projection() -> None:
+    independence = {
+        "policy_version": "STRICT_PROVIDER_INDEPENDENT_V1",
+        "outcome": "ALERT_ELIGIBLE",
+        "decision_grade": "RESEARCH_ONLY",
+        "evaluated_features": ["coinglass_derivatives"],
+        "blocking_features": [],
+        "degraded_optional_features": ["coinglass_derivatives"],
+        "reasons": ["coinglass_derivatives: plan quota exceeded"],
+        "reason_codes": ["coinglass_derivatives: PROVIDER_UNAVAILABLE"],
+    }
+    source = _candidate()
+    source["metrics"]["entry_decision"]["provider_independence"] = independence
+    source["metrics"]["provider_independence"] = independence
+
+    projected = project_dashboard_candidate(source)
+
+    assert (
+        projected["metrics"]["entry_decision"]["provider_independence"]
+        == independence
+    )
+    assert projected["metrics"]["provider_independence"] == independence
+
+    # Legacy packets without the wiring project byte-identically.
+    legacy = project_dashboard_candidate(_candidate())
+    assert "provider_independence" not in legacy["metrics"]["entry_decision"]
+    assert "provider_independence" not in legacy["metrics"]
