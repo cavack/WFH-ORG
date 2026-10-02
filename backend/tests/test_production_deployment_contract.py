@@ -222,7 +222,7 @@ def test_runner_registration_auth_stays_at_the_root_provisioning_boundary() -> N
     root_gate = provisioner.index('[[ "$EUID" -eq 0 ]]')
     auth_gate = provisioner.index("gh auth status")
     token_call = provisioner.index("actions/runners/registration-token")
-    runner_config = provisioner.index('runuser -u "$RUNNER_USER" -- "$RUNNER_DIR/config.sh"')
+    runner_config = provisioner.index('runuser -u "$RUNNER_USER" -- ./config.sh')
     assert root_gate < auth_gate < token_call < runner_config
     assert 'runuser -u "$RUNNER_USER" -- gh' not in provisioner
     assert "/root/.config/gh" not in provisioner

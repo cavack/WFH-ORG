@@ -16,6 +16,8 @@ from waterfallhunter.core.microstructure import MicrostructureAnalyzer
 from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
 from waterfallhunter.core.position_calculator import PositionCalculator
 from waterfallhunter.core.schema_contract import require_managed_schema
+from waterfallhunter.core.entry_decision import provider_independence_from_metrics
+from waterfallhunter.core.strict_provider_independent import PROVIDER_UNAVAILABLE
 
 
 logger = logging.getLogger("WaterfallHunter.FeatureReplay")
@@ -24,6 +26,79 @@ EQUIVALENT = "EQUIVALENT"
 MISMATCH = "MISMATCH"
 NOT_REPLAYABLE = "NOT_REPLAYABLE"
 ERROR = "ERROR"
+
+
+def _positive_finite_float(value: Any) -> float | None:
+    """Return ``value`` as a positive finite float, else ``None``.
+
+    ``None`` means "this fact was not captured". Callers must fail closed rather
+    than substituting zero, which would silently mis-price the candidate or
+    fabricate a capture timestamp that looks fresh.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and number > 0.0 else None
+
+
+def resolve_reference_price(payload: dict, ticker: dict) -> tuple[float, str] | None:
+    """Resolve the replay reference price from captured data only.
+
+    Returns ``(price, source)``, where ``source`` is ``"payload"`` (the price the
+    decision itself recorded) or ``"ticker"`` (the captured ticker's last trade).
+    Returns ``None`` when no positive finite price was captured; the caller must
+    then report ``REFERENCE_PRICE_UNAVAILABLE`` instead of pricing at zero.
+    """
+    recorded = _positive_finite_float((payload or {}).get("reference_price"))
+    if recorded is not None:
+        return recorded, "payload"
+    observed = _positive_finite_float((ticker or {}).get("last"))
+    if observed is not None:
+        return observed, "ticker"
+    return None
+
+
+def _captured_retrieved_at(selected: dict) -> float | None:
+    """The capture timestamp used to age derivatives evidence, or ``None``."""
+    return _positive_finite_float((selected or {}).get("retrieved_at"))
+
+
+def _derivatives_unavailable(reason: str, attempts: list[dict]) -> dict:
+    """Explicit UNAVAILABLE derivatives packet; never a zero-filled stand-in."""
+    return {
+        "available": False,
+        "reason": reason,
+        "source_exchange": None,
+        "mapped_symbol": None,
+        "market_id": None,
+        "retrieved_at": None,
+        "fallback_attempts": attempts,
+    }
+
+
+def _independence_view(
+    candle_analysis: dict, microstructure: dict, derivatives: dict
+) -> dict:
+    """The STRICT evaluation of one side of the replay equivalence diff.
+
+    Both production and replay facts go through the exact shared function
+    the live pipeline uses (``provider_independence_from_metrics``), so an
+    EQUIVALENT replay can never grade its evidence differently than
+    production did — the evaluation itself becomes part of the contract.
+    """
+    details = (candle_analysis or {}).get("details") or {}
+    candle_features = {
+        timeframe: context
+        for timeframe, context in details.items()
+        if isinstance(context, dict) and context.get("valid") is True
+    }
+    return provider_independence_from_metrics(
+        {
+            "candle_features": candle_features,
+            "microstructure": microstructure or {},
+            "derivatives": derivatives or {},
+        }
+    )
 
 
 class _CapturedExchange:
@@ -102,6 +177,15 @@ class FeatureReplayEngine:
         ]
         provider = str(selected.get("provider") or "")
         analyzer = DerivativesAnalyzer()
+        retrieved_at = _captured_retrieved_at(selected)
+        if provider and retrieved_at is None:
+            # The capture has no usable timestamp, so its evidence cannot be aged
+            # honestly. This previously became epoch 0.0, which fabricated a
+            # timestamp and hid the gap from replay.
+            return _derivatives_unavailable(
+                f"{PROVIDER_UNAVAILABLE}: derivatives capture has no usable retrieved_at",
+                attempts,
+            )
         if provider == "binance":
             result = analyzer.evaluate_binance_rows(
                 mapped_symbol=str(selected.get("mapped_symbol") or ""),
@@ -110,10 +194,9 @@ class FeatureReplayEngine:
                 taker_rows=selected.get("taker_rows"),
                 top_trader_rows=selected.get("top_trader_rows"),
                 open_interest_rows=selected.get("open_interest_rows"),
-                retrieved_at=float(selected.get("retrieved_at") or 0.0),
+                retrieved_at=retrieved_at,
             )
         elif provider.startswith("coinglass:"):
-            retrieved_at = float(selected.get("retrieved_at") or 0.0)
             funding = CoinGlassDerivativesClient._funding(
                 selected.get("funding_payload"), retrieved_at
             )
@@ -143,14 +226,10 @@ class FeatureReplayEngine:
                 taker_ratio_change_1h=taker_change,
             )
         else:
-            result = {
-                "available": False,
-                "reason": "no complete live derivatives data source in exchange waterfall",
-                "source_exchange": None,
-                "mapped_symbol": None,
-                "market_id": None,
-                "retrieved_at": None,
-            }
+            result = _derivatives_unavailable(
+                "no complete live derivatives data source in exchange waterfall",
+                attempts,
+            )
         result["fallback_attempts"] = attempts
         return result
 
@@ -274,15 +353,27 @@ class FeatureReplayEngine:
         replayed_micro = self._without_runtime_fields(replayed_micro)
         expected_micro = self._without_runtime_fields(expected_micro)
 
-        validator = object.__new__(MultiExchangeValidator)
         ticker = metrics.get("ticker") or {}
+        resolved_reference = resolve_reference_price(payload, ticker)
+        if resolved_reference is None:
+            # Without a captured price the replay cannot re-derive cost or
+            # suitability honestly, so it must not continue at a silent 0.0.
+            return self._packet(
+                NOT_REPLAYABLE,
+                {"reference_price": "REFERENCE_PRICE_UNAVAILABLE"},
+                decision_path,
+            )
+        reference_price, reference_price_source = resolved_reference
+        logger.debug("replay reference price resolved from %s", reference_price_source)
+
+        validator = object.__new__(MultiExchangeValidator)
         score_result = validator._merge_score_v2(
             candles=details,
             microstructure=replayed_micro,
             derivatives=replayed_derivatives,
             cross_exchange_confirmed=bool(candle_result["is_breakdown_confirmed"]),
             ticker=ticker,
-            reference_price=float(payload.get("reference_price") or ticker.get("last") or 0.0),
+            reference_price=reference_price,
             strategy_stages=stages,
         )
         quality_gates = {
@@ -412,15 +503,34 @@ class FeatureReplayEngine:
         }
         if position_attempted:
             expected_core["position_setup"] = metrics.get("position_setup") or {}
+        replay_independence = _independence_view(
+            replayed_core.get("candle_analysis") or {},
+            replayed_core.get("microstructure") or {},
+            replayed_core.get("derivatives") or {},
+        )
+        expected_independence = _independence_view(
+            expected_core.get("candle_analysis") or {},
+            expected_core.get("microstructure") or {},
+            expected_core.get("derivatives") or {},
+        )
+        replayed_core["provider_independence"] = replay_independence
+        expected_core["provider_independence"] = expected_independence
         differences = self._diff(expected_core, replayed_core)
         return self._packet(
             EQUIVALENT if not differences else MISMATCH,
             differences,
             decision_path,
+            provider_independence=replay_independence,
         )
 
-    def _packet(self, status: str, differences: dict, decision_path: str = "UNKNOWN") -> dict:
-        return {
+    def _packet(
+        self,
+        status: str,
+        differences: dict,
+        decision_path: str = "UNKNOWN",
+        provider_independence: dict | None = None,
+    ) -> dict:
+        packet = {
             "version": self.VERSION,
             "status": status,
             "strategy_equivalent": status == EQUIVALENT,
@@ -429,6 +539,12 @@ class FeatureReplayEngine:
             "observational_only": True,
             "hard_gating_allowed": False,
         }
+        # Only paths with replayed facts can carry an evaluation;
+        # NOT_REPLAYABLE packets stay unchanged rather than guessing a
+        # grade they cannot prove.
+        if provider_independence is not None:
+            packet["provider_independence"] = provider_independence
+        return packet
 
 
 class FeatureReplayStore:

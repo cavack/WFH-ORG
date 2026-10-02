@@ -10,6 +10,14 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from waterfallhunter.core.strict_provider_independent import (
+    FeatureAvailability,
+    FeatureDependency,
+    FeatureRequirement,
+    coinglass_dependency,
+    evaluate_provider_independence,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class EntryDecisionPolicy:
@@ -421,6 +429,91 @@ def _evidence_summary(metrics: dict[str, Any]) -> dict[str, Any]:
             "reason": _record(metrics.get("ai_advisory")).get("deterministic_reason"),
         },
     }
+
+
+def _mandatory_dependency(
+    name: str, *, active: bool, reason: str, reason_code: str
+) -> FeatureDependency:
+    """A non-derivatives dependency: unavailable evidence blocks alert grade."""
+    if active:
+        return FeatureDependency(
+            name=name,
+            requirement=FeatureRequirement.MANDATORY,
+            availability=FeatureAvailability.ACTIVE,
+        )
+    return FeatureDependency(
+        name=name,
+        requirement=FeatureRequirement.MANDATORY,
+        availability=FeatureAvailability.UNAVAILABLE,
+        reason=reason,
+        reason_code=reason_code,
+    )
+
+
+def provider_independence_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate STRICT_PROVIDER_INDEPENDENT_V1 over a decision's evidence facts.
+
+    Report-only: it never changes scoring, gates, or the terminal decision —
+    it makes the eligibility outcome and decision grade explicit on the
+    user-facing packet so the dashboard/advisory can show the grade and the
+    exact gap that produced it.
+
+    Structure, timing, microstructure, and execution evidence are
+    ``MANDATORY`` (their absence forces ``NOT_ALERT_GRADE``); CoinGlass-style
+    derivatives evidence is ``OPTIONAL`` via ``coinglass_dependency`` (its
+    absence degrades the grade to ``RESEARCH_ONLY`` but never blocks alert
+    eligibility). Scoring components that are derived inputs rather than
+    providers (order_flow, cross_exchange, price_location, cascade) remain
+    visible on the same packet through ``reason_codes`` and
+    ``evidence_coverage_pct``; representing them as explicit dependencies is
+    tracked as follow-up work in docs/STRICT_PROVIDER_INDEPENDENT_V1.md.
+    """
+    candles = _record(metrics.get("candle_features"))
+    micro = _record(metrics.get("microstructure"))
+    derivatives = _record(metrics.get("derivatives"))
+
+    structure_valid = _record(candles.get("4h")).get("valid") is True
+    timing_valid = any(
+        _record(candles.get(timeframe)).get("valid") is True
+        for timeframe in ("1h", "15m", "5m")
+    )
+    micro_approved = isinstance(micro.get("approved"), bool)
+    execution_inputs = bool(
+        micro_approved
+        and _finite(micro.get("spread_pct")) is not None
+        and _finite(micro.get("slippage_pct")) is not None
+    )
+    dependencies = {
+        "structure": _mandatory_dependency(
+            "structure",
+            active=structure_valid,
+            reason="4h structure evidence unavailable",
+            reason_code="STRUCTURE_UNAVAILABLE",
+        ),
+        "timing": _mandatory_dependency(
+            "timing",
+            active=timing_valid,
+            reason="timing evidence unavailable",
+            reason_code="TIMING_UNAVAILABLE",
+        ),
+        "microstructure": _mandatory_dependency(
+            "microstructure",
+            active=micro_approved,
+            reason="microstructure approval evidence unavailable",
+            reason_code="MICROSTRUCTURE_UNAVAILABLE",
+        ),
+        "execution": _mandatory_dependency(
+            "execution",
+            active=execution_inputs,
+            reason="execution cost evidence unavailable",
+            reason_code="EXECUTION_UNAVAILABLE",
+        ),
+        "coinglass_derivatives": coinglass_dependency(
+            available=derivatives.get("available") is True,
+            reason=str(derivatives.get("reason") or "").strip() or None,
+        ),
+    }
+    return evaluate_provider_independence(dependencies).model_dump(mode="json")
 
 
 def _terminal_transition_packet(
@@ -858,6 +951,7 @@ def build_entry_decision(
         "reason_codes": sorted(set(reasons)),
         "components": components,
         "evidence_summary": _evidence_summary(metrics),
+        "provider_independence": provider_independence_from_metrics(metrics),
         "trade_plan": trade_plan,
         "policy": asdict(policy),
     }
